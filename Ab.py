@@ -17,11 +17,13 @@ class StockData(object):
         self.start_date = start_date
         self.end_date = end_date
         self.data = yf.download(self.ticker, start=self.start_date, end=self.end_date)
+        #self.data.reset_index(inplace=True)
 
     def get_data_from_csv(self, path:str):
         self.data = pd.read_csv(path)
         self.data['Date'] = pd.to_datetime(self.data['Date'])
         self.data.set_index('Date', inplace=True)
+        #self.data.sort_values(by='Date', inplace=True)
 
 class Strategy(metaclass=ABCMeta):
     def __init__(self, stop_loss:float, take_profit:float):
@@ -30,40 +32,33 @@ class Strategy(metaclass=ABCMeta):
         self.trades = pd.DataFrame(columns=['Date','Ticker','Action', 'Price'])
         #Action: Buy, Sell, StopLoss, TakeProfit, BuyAll, SellAll
     @abstractmethod
-    def buyS(self, stock_data:StockData):
-        pass
-    @abstractmethod
-    def sellS(self, stock_data:StockData):
-        pass
-    @abstractmethod
-    def run_strategy(self, stock_data:StockData):
+    def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
         pass
 
 #Simple implementation of Buy and Hold strategy of above Strategy class
 class BuyAndHold(Strategy):
     def __init__(self,stop_loss:float=0, take_profit:float=0):
         super().__init__(stop_loss, take_profit)
-    def buyS(self, stock_data:StockData):
-        self.trades.loc[len(self.trades.index)] = [stock_data.data.index[0], stock_data.ticker, 'BuyAll', stock_data.data['Close'][0]]
 
-    def sellS(self, stock_data:StockData):
-        self.trades.loc[len(self.trades.index)] = [stock_data.data.index[-1], stock_data.ticker, 'SellAll', stock_data.data['Close'][-1]]
-
-    def run_strategy(self, stock_data:StockData):
-        self.buyS(stock_data)
-        self.sellS(stock_data)
+    def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
+        #get the start and end date, if the start date is before the stock data start date, use the stock data start date
+        sd = stock_data.data.index[0] if stock_data.data.index[0] > start_date else start_date
+        ed = stock_data.data.index[-1] if stock_data.data.index[-1] < end_date else end_date
+        for row in stock_data.data.iterrows():
+            if row[0] == sd:
+                self.trades.loc[len(self.trades.index)] = [row[0], stock_data.ticker, 'BuyAll', row[1]['Close']]
+            elif row[0] == ed:
+                self.trades.loc[len(self.trades.index)] = [row[0], stock_data.ticker, 'SellAll', row[1]['Close']]
 
 class MACross(Strategy):
     def __init__(self, short_window:int, long_window:int, stop_loss:float=0, take_profit:float=0):
         super().__init__(stop_loss, take_profit)
         self.short_window = short_window
         self.long_window = long_window
-
-    def buyS(self, stock_data:StockData):
-        pass
-    def sellS(self, stock_data:StockData):
-        pass
-    def run_strategy(self, stock_data:StockData):
+    def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
+        #get the start and end date, if the start date is before the stock data start date, use the stock data start date
+        sd = stock_data.data.index[0] if stock_data.data.index[0] > start_date else start_date
+        ed = stock_data.data.index[-1] if stock_data.data.index[-1] < end_date else end_date
         #Calculate the short and long moving average
         stock_data.data['ShortMA'] = stock_data.data['Close'].rolling(window=self.short_window).mean()
         stock_data.data['LongMA'] = stock_data.data['Close'].rolling(window=self.long_window).mean()
@@ -75,6 +70,8 @@ class MACross(Strategy):
 
         #Generate the trade list
         for row in stock_data.data.iterrows():
+ #           if row[1]['Date'] < sd or row[1]['Date'] > ed:
+ #               continue
             if row[1]['Signal'] == 1:
                 self.trades.loc[len(self.trades.index)] = [row[0], stock_data.ticker, 'Buy', row[1]['Close']]
             elif row[1]['Signal'] == -1:
@@ -90,7 +87,7 @@ class Portfolio(metaclass=ABCMeta):
         self.balance = pd.DataFrame(columns=['Date','Cash','Stock','Total','Margin'])
         
     @abstractmethod
-    def run_strategy(self, strategy:Strategy, stock_data:StockData):
+    def run_backtest(self, strategy:Strategy, stock_data:StockData):
         pass
 
 
@@ -98,9 +95,11 @@ class BackTest(Portfolio):
     def __init__(self, sd:dt.datetime, ed:dt.datetime, principal=1000000, trade_size=1 , prymiding=1):
         super().__init__(principal, trade_size, prymiding, 0)
         self.prymiding_count = 0
+        self.start_date = sd
+        self.end_date = ed
         
-    def run_strategy(self, strategy:Strategy, stock_data:StockData):
-        self.balance['Date'] = stock_data.data.index
+    def run_backtest(self, strategy:Strategy, stock_data:StockData):
+        self.balance['Date'] = np.where((stock_data.data.index >= self.start_date) & (stock_data.data.index <= self.end_date), stock_data.data.index, None)
         self.balance['Cash'] = 0
         self.balance['Stock'] = 0
         self.balance['Total'] = 0
