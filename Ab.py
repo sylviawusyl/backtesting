@@ -146,8 +146,8 @@ class BackTest(Portfolio):
                 elif j[1]['Action'] == 'Buy':
                     if self.prymiding_count < self.prymiding:
                         self.prymiding_count = self.prymiding_count + 1
-                        self.balance.loc[i[0], 'Stock'] = self.balance.loc[i[0], 'Stock'] + self.trade_size * self.balance.loc[i[0], 'Cash'] / j[1]['Price']
-                        self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0], 'Cash'] - self.trade_size * self.balance.loc[i[0], 'Cash']
+                        self.balance.loc[i[0], 'Stock'] = self.balance.loc[i[0]-1, 'Stock'] + self.trade_size * self.balance.loc[i[0]-1, 'Cash'] / j[1]['Price']
+                        self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0]-1, 'Cash'] - self.trade_size * self.balance.loc[i[0]-1, 'Cash']
                         self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0], 'Cash'] + self.balance.loc[i[0], 'Stock'] * j[1]['Price']
                     else:                        
                         #No action on this day, copy the previous day's row value except for Date
@@ -156,8 +156,8 @@ class BackTest(Portfolio):
                         self.balance.loc[i[0], 'Total'] = stock_data.data.loc[i[1]['Date'], 'Close'] * self.balance.loc[i[0], 'Stock'] + self.balance.loc[i[0], 'Cash']
                 elif j[1]['Action'] == 'Sell':
                     if self.prymiding_count > 0:
-                        self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0], 'Cash'] + self.trade_size * self.balance.loc[i[0]-1, 'Stock'] * j[1]['Price']
-                        self.balance.loc[i[0], 'Stock'] = self.balance.loc[i[0] - 1, 'Stock'] - self.trade_size * self.balance.loc[i[0] - 1, 'Stock']
+                        self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0]-1, 'Cash'] + self.trade_size * self.balance.loc[i[0]-1, 'Stock'] * j[1]['Price']
+                        self.balance.loc[i[0], 'Stock'] = self.balance.loc[i[0]-1, 'Stock'] - self.trade_size * self.balance.loc[i[0]-1, 'Stock']
                         self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0], 'Cash'] + self.balance.loc[i[0], 'Stock'] * j[1]['Price']
                         self.prymiding_count = self.prymiding_count - 1
                     else:
