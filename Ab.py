@@ -124,16 +124,22 @@ class BackTest(Portfolio):
         
     def run_strategy(self, strategy:Strategy, stock_data:StockData):
         self.balance['Date'] = stock_data.data.index
-        self.balance['Cash'] = self.principal
+        self.balance['Cash'] = 0
         self.balance['Stock'] = 0
-        self.balance['Total'] = self.principal
+        self.balance['Total'] = 0
         self.balance['Margin'] = 0
+        
+        self.balance.loc[0, 'Cash'] = self.principal
+        self.balance.loc[0, 'Stock'] = 0                
+        self.balance.loc[0, 'Total'] = self.principal
+        
 
         x = self.balance.iterrows()
         y = strategy.trades.iterrows()
         i = next(x, None)
         j = next(y, None)
         while i is not None and j is not None:
+ 
             if i[1]['Date'] == j[1]['Date']:
                 if j[1]['Action'] == 'BuyAll':
                     self.balance.loc[i[0], 'Stock'] = self.trade_size * self.balance.loc[i[0], 'Cash'] / j[1]['Price']
@@ -146,8 +152,11 @@ class BackTest(Portfolio):
                 elif j[1]['Action'] == 'Buy':
                     if self.prymiding_count < self.prymiding:
                         self.prymiding_count = self.prymiding_count + 1
-                        self.balance.loc[i[0], 'Stock'] = self.balance.loc[i[0]-1, 'Stock'] + self.trade_size * self.balance.loc[i[0]-1, 'Cash'] / j[1]['Price']
-                        self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0]-1, 'Cash'] - self.trade_size * self.balance.loc[i[0]-1, 'Cash']
+                        # today's stock = previous day stock + trade % * previous day cash / today price
+                        self.balance.loc[i[0], 'Stock'] = self.balance.loc[i[0] - 1, 'Stock'] + self.trade_size * self.balance.loc[i[0] - 1, 'Cash'] / j[1]['Price']
+                        # today's cash = previous day cash - trade % * previous day cash 
+                        self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0] - 1, 'Cash'] - self.trade_size * self.balance.loc[i[0] - 1, 'Cash']
+                        # today's balance = cash + stock value
                         self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0], 'Cash'] + self.balance.loc[i[0], 'Stock'] * j[1]['Price']
                     else:                        
                         #No action on this day, copy the previous day's row value except for Date
@@ -156,8 +165,10 @@ class BackTest(Portfolio):
                         self.balance.loc[i[0], 'Total'] = stock_data.data.loc[i[1]['Date'], 'Close'] * self.balance.loc[i[0], 'Stock'] + self.balance.loc[i[0], 'Cash']
                 elif j[1]['Action'] == 'Sell':
                     if self.prymiding_count > 0:
-                        self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0]-1, 'Cash'] + self.trade_size * self.balance.loc[i[0]-1, 'Stock'] * j[1]['Price']
-                        self.balance.loc[i[0], 'Stock'] = self.balance.loc[i[0]-1, 'Stock'] - self.trade_size * self.balance.loc[i[0]-1, 'Stock']
+                        # today's cash = previous day cash + trade % * previous day stock * today price
+                        self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0] - 1, 'Cash'] + self.trade_size * self.balance.loc[i[0]-1, 'Stock'] * j[1]['Price']
+                        # today's stock = previous day stock - trade % * previous day stock
+                        self.balance.loc[i[0], 'Stock'] = self.balance.loc[i[0] - 1, 'Stock'] - self.trade_size * self.balance.loc[i[0] - 1, 'Stock']
                         self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0], 'Cash'] + self.balance.loc[i[0], 'Stock'] * j[1]['Price']
                         self.prymiding_count = self.prymiding_count - 1
                     else:
