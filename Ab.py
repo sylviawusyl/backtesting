@@ -2,8 +2,9 @@ import pandas as pd
 import yfinance as yf
 import datetime as dt   
 import numpy as np
-import matplotlib.pyplot as plt
+
 from abc import abstractmethod, ABCMeta
+
 class StockData(object):
     def __init__(self, ticker:str):
         self.ticker = ticker
@@ -21,17 +22,6 @@ class StockData(object):
         self.data = pd.read_csv(path)
         self.data['Date'] = pd.to_datetime(self.data['Date'])
         self.data.set_index('Date', inplace=True)
-
-
-#Test Code, need to remove
-qqq = StockData('QQQ')
-qqq.get_data_from_csv('data/QQQ.csv')
-qqq2 = StockData('QQQ')
-qqq2.get_data_from_yfinance('QQQ', dt.datetime(1998,12,4), dt.datetime(2022,3,2))
-#need to preprocess the csv to remove gargage data, need to reverse the order of the data.
-print(qqq.data.index[0], qqq.data['Close'][0])
-print(qqq2.data.index[-1], qqq2.data['Close'][-1])
-
 
 class Strategy(metaclass=ABCMeta):
     def __init__(self, stop_loss:float, take_profit:float):
@@ -63,11 +53,6 @@ class BuyAndHold(Strategy):
         self.buyS(stock_data)
         self.sellS(stock_data)
 
-#Test Code, need to remove:
-buy_and_hold = BuyAndHold()
-buy_and_hold.run_strategy(qqq2)
-print(buy_and_hold.trades)
-
 class MACross(Strategy):
     def __init__(self, short_window:int, long_window:int, stop_loss:float=0, take_profit:float=0):
         super().__init__(stop_loss, take_profit)
@@ -94,14 +79,6 @@ class MACross(Strategy):
                 self.trades.loc[len(self.trades.index)] = [row[0], stock_data.ticker, 'Buy', row[1]['Close']]
             elif row[1]['Signal'] == -1:
                 self.trades.loc[len(self.trades.index)] = [row[0], stock_data.ticker, 'Sell', row[1]['Close']]       
-
-
-macross_strategy = MACross(50, 200)
-macross_strategy.run_strategy(qqq2)
-print(qqq2.data)
-print(macross_strategy.trades)
-
-
 
 class Portfolio(metaclass=ABCMeta):
     def __init__(self, principal, trade_size, prymiding, margin):
@@ -190,14 +167,3 @@ class BackTest(Portfolio):
                     self.balance.loc[i[0], 'Stock'] =  self.balance.loc[i[0]-1, 'Stock']
                     self.balance.loc[i[0], 'Total'] = stock_data.data.loc[i[1]['Date'], 'Close'] * self.balance.loc[i[0], 'Stock'] + self.balance.loc[i[0], 'Cash']
             i = next(x, None)
-        
-#Test Code, need to remove:
-bt = BackTest(dt.datetime(1998,12,4), dt.datetime(2022,3,2))
-bt.run_strategy(buy_and_hold, qqq2)
-ma_cross_bt = BackTest(dt.datetime(1998,12,4), dt.datetime(2022,3,2))
-ma_cross_bt.run_strategy(macross_strategy, qqq2)
-
-#plot the result
-plt.plot(bt.balance['Date'], bt.balance['Total'])
-plt.plot(ma_cross_bt.balance['Date'], ma_cross_bt.balance['Total'])
-plt.savefig('BackTest.png')
