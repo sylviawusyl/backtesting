@@ -77,6 +77,51 @@ class MACross(Strategy):
             elif row[1]['Signal'] == -1:
                 self.trades.loc[len(self.trades.index)] = [row[0], stock_data.ticker, 'Sell', row[1]['Close']]       
 
+class Threshold(Strategy):
+    def __init__(self, signal_data:StockData, indicator, buy_threshold:float, sell_threshold:float, stop_loss:float=0, take_profit:float=0):
+        super().__init__(stop_loss, take_profit)
+        self.signal_data = signal_data
+        self.indicator = indicator
+        self.buy_threshold = buy_threshold
+        self.sell_threshold = sell_threshold
+
+    def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
+        self.stock_ticker = stock_data.ticker
+        self.signal_ticker = self.signal_data.ticker
+
+        # get the start and end date, if the start date is before the stock data start date, use the stock data start date
+        # it should only include dates that both signal data and stock data are available 
+        sd = max(stock_data.data.index[0], self.signal_data.data.index[0]) if max(stock_data.data.index[0], self.signal_data.data.index[0]) > start_date else start_date
+        ed = min(stock_data.data.index[-1], self.signal_data.data.index[-1]) if min(stock_data.data.index[-1], self.signal_data.data.index[-1]) < end_date else end_date
+        
+        # make sure dates and rows are aligned in signal data and stock data
+        self.joined_data = stock_data.data[['Close']].rename(columns={'Close':'StockPrice'}).merge(self.signal_data.data[['Close']].rename(columns = {'Close':'SignalPrice'}),
+                                             how = 'inner', left_index = True, right_index = True).sort_index()
+
+        #Calculate the indicator (TODO: here the indicator comes from the signal data price, in the future can use other indicators passed to the function)
+       
+        # self.joined_data['Indicator'] = self.joined_data[self.indicator]
+        self.joined_data['SignalMA20'] = self.joined_data['SignalPrice'].rolling(window=20).mean()
+
+        #Calculate the signal
+        # sell signal: price < 30 (sell threshold), and in a downward trend. use sma20>price as a proxy of downward trend
+        # buy signal: price > 15 (buy threshold), and in an upward trend. use sma20<price as a proxy of upward trend
+        # otherwise, when buy threshold < sell threshold, it won't work (sell rule will always dominates, eg, when price < 30, all sell)
+        # (TODO) is there a better way to define the signal or a better proxy of downward/upward trend ?
+        self.joined_data['Signal'] = np.where((self.joined_data['SignalPrice'] < self.sell_threshold) & (self.joined_data['SignalMA20']>self.joined_data['SignalPrice']), -1.0, 
+                                            np.where((self.joined_data['SignalPrice'] > self.buy_threshold)  & (self.joined_data['SignalMA20']<self.joined_data['SignalPrice']), 1.0, 0.0)
+                                            )
+                                            
+        #Generate the trade list
+        for row in self.joined_data.iterrows():
+ #           if row[1]['Date'] < sd or row[1]['Date'] > ed:
+ #               continue
+            if row[1]['Signal'] == 1:
+                self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Buy', row[1]['StockPrice']]
+            elif row[1]['Signal'] == -1:
+                self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Sell', row[1]['StockPrice']]       
+
+
 class Portfolio(metaclass=ABCMeta):
     def __init__(self, principal, trade_size, prymiding, margin):
         self.principal = principal
