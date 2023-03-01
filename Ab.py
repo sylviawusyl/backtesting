@@ -110,36 +110,72 @@ class BuyAndHold(Strategy):
                 self.trades.loc[len(self.trades.index)] = [row[0], stock_data.ticker, 'SellAll', row[1]['Close']]
 
 class MACross(Strategy):
-    def __init__(self, short_window:int, long_window:int, stop_loss:float=0, take_profit:float=0):
+    def __init__(self, short_window:int, long_window:int, stop_loss:float=0, take_profit:float=0, strategy_name = 'MACross'):
         super().__init__(stop_loss, take_profit)
         self.short_window = short_window
         self.long_window = long_window
+        self.strategy_name = strategy_name
+        
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
-        #get the start and end date, if the start date is before the stock data start date, use the stock data start date
-        #sd = stock_data.data.index[0] if stock_data.data.index[0] > start_date else start_date
-        #ed = stock_data.data.index[-1] if stock_data.data.index[-1] < end_date else end_date
-        # the min and max trade date between the entered start date and end date
-        sd = min( [ i  for i in stock_data.data.index if i >= start_date and i <= end_date])
-        ed = max( [ i  for i in stock_data.data.index if i >= start_date and i <= end_date])
+        self.stock_ticker = stock_data.ticker
+
+        # get the start and end date
+        # if there is input for sd and ed, then filter the data for the date range only 
+        if start_date:
+            self.joined_data = stock_data.data.loc[(stock_data.data.index >= start_date) 
+                                                   & (stock_data.data.index <= end_date)].copy()
+        else:
+            self.joined_data = stock_data.data.copy()
         
         #Calculate the short and long moving average
-        stock_data.data['ShortMA'] = stock_data.data['Close'].rolling(window=self.short_window).mean()
-        stock_data.data['LongMA'] = stock_data.data['Close'].rolling(window=self.long_window).mean()
+        self.joined_data['ShortMA'] = self.joined_data['Close'].rolling(window=self.short_window).mean()
+        self.joined_data['LongMA'] = self.joined_data['Close'].rolling(window=self.long_window).mean()
         #Calculate the signal
-        stock_data.data['Signal'] = 0.0
+        self.joined_data['Signal'] = 0.0
         #Calculate the Buy signal, if the short moving average is greater than the long moving average first time, then buy
-        stock_data.data['Signal'] = np.where(stock_data.data['ShortMA'] > stock_data.data['LongMA'], 1.0, 0.0)
+        self.joined_data['Signal'] = np.where(self.joined_data['ShortMA'] > self.joined_data['LongMA'], 1.0, 0.0)
         #Calculate the Sell signal
-        stock_data.data['Signal'] = np.where(stock_data.data['ShortMA'] < stock_data.data['LongMA'], -1.0, stock_data.data['Signal'])
+        self.joined_data['Signal'] = np.where(self.joined_data['ShortMA'] < self.joined_data['LongMA'], -1.0, self.joined_data['Signal'])
 
         #Generate the trade list
-        for row in stock_data.data.iterrows():
+        for row in self.joined_data.iterrows():
  #           if row[1]['Date'] < sd or row[1]['Date'] > ed:
  #               continue
             if row[1]['Signal'] == 1:
-                self.trades.loc[len(self.trades.index)] = [row[0], stock_data.ticker, 'Buy', row[1]['Close']]
+                self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Buy', row[1]['Close']]
             elif row[1]['Signal'] == -1:
-                self.trades.loc[len(self.trades.index)] = [row[0], stock_data.ticker, 'Sell', row[1]['Close']]       
+                self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Sell', row[1]['Close']]       
+
+class MAThreshold(Strategy):
+    def __init__(self, ma_window:int, buy_threshold:float, sell_threshold:float, stop_loss:float=0, take_profit:float=0):
+        super().__init__(stop_loss, take_profit)
+        self.ma_window = ma_window
+        self.buy_threshold = buy_threshold
+        self.sell_threshold = sell_threshold
+
+    def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
+        self.stock_ticker = stock_data.ticker
+      
+        if start_date:
+            self.joined_data = stock_data.data.loc[(stock_data.data.index >= start_date) 
+                                                   & (stock_data.data.index <= end_date)].copy()
+        else:
+            self.joined_data = stock_data.data.copy()
+
+        self.joined_data['MA'] = self.joined_data['Close'].rolling(window=self.ma_window).mean()
+        self.joined_data['price_to_MA'] = self.joined_data['Close'] / self.joined_data['MA']
+
+        #Calculate the signal
+        self.joined_data['Signal'] = np.where((self.joined_data['price_to_MA'] < self.sell_threshold) , -1.0, 
+                                            np.where((self.joined_data['price_to_MA'] > self.buy_threshold), 1.0, 0.0)
+                                            )
+                                            
+        #Generate the trade list
+        for row in self.joined_data.iterrows():
+            if row[1]['Signal'] == 1:
+                self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Buy', row[1]['Close']]
+            elif row[1]['Signal'] == -1:
+                self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Sell', row[1]['Close']]      
 
 class Threshold(Strategy):
     def __init__(self, signal_data:StockData, indicator, buy_threshold:float, sell_threshold:float, stop_loss:float=0, take_profit:float=0):
@@ -152,15 +188,18 @@ class Threshold(Strategy):
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
         self.stock_ticker = stock_data.ticker
         self.signal_ticker = self.signal_data.ticker
-
-        # get the start and end date, if the start date is before the stock data start date, use the stock data start date
-        # it should only include dates that both signal data and stock data are available 
-        sd = max(stock_data.data.index[0], self.signal_data.data.index[0]) if max(stock_data.data.index[0], self.signal_data.data.index[0]) > start_date else start_date
-        ed = min(stock_data.data.index[-1], self.signal_data.data.index[-1]) if min(stock_data.data.index[-1], self.signal_data.data.index[-1]) < end_date else end_date
-        
+       
         # make sure dates and rows are aligned in signal data and stock data
-        self.joined_data = stock_data.data[['Close']].rename(columns={'Close':'StockPrice'}).merge(self.signal_data.data[['Close']].rename(columns = {'Close':'SignalPrice'}),
+        # it should only include dates that both signal data and stock data are available 
+        self.joined_data = stock_data.data[['Close']].rename(columns={'Close':'StockPrice'}).merge(
+                                             self.signal_data.data[['Close']].rename(columns = {'Close':'SignalPrice'}),
                                              how = 'inner', left_index = True, right_index = True).sort_index()
+
+        # if there is input for sd and ed, then filter the data for the date range only 
+        if start_date:
+            self.joined_data = self.joined_data.loc[(self.joined_data.index >= start_date) & (self.joined_data.index <= end_date)].copy()
+        else:
+            pass
 
         #Calculate the indicator (TODO: here the indicator comes from the signal data price, in the future can use other indicators passed to the function)
        
@@ -178,8 +217,6 @@ class Threshold(Strategy):
                                             
         #Generate the trade list
         for row in self.joined_data.iterrows():
- #           if row[1]['Date'] < sd or row[1]['Date'] > ed:
- #               continue
             if row[1]['Signal'] == 1:
                 self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Buy', row[1]['StockPrice']]
             elif row[1]['Signal'] == -1:
@@ -198,6 +235,44 @@ class Portfolio(metaclass=ABCMeta):
     @abstractmethod
     def run_backtest(self, strategy:Strategy, stock_data:StockData):
         pass
+
+    def performance_summary(self, strategy_name):
+        portValue = self.balance[['Total']]
+        
+        # cumulative return
+        cumulative_return = portValue.iloc[-1] / portValue.iloc[0] - 1
+        
+        # max_drawdown
+        drawdown_window = 252
+        rolling_max = portValue.rolling(drawdown_window, min_periods=1).max()
+        daily_drawdown = portValue/rolling_max - 1.0
+        max_daily_drawdown = daily_drawdown.rolling(drawdown_window, min_periods=1).min()
+        max_drawdown = max_daily_drawdown.min()
+
+        # daily return and sharpe ratio
+        daily_return = (portValue / portValue.shift(1) - 1) [1:]
+        avg_return = daily_return.mean()
+        std_return = daily_return.std()
+        sharp_ratio = avg_return/std_return    
+
+        # number of trades
+        num_trades = self.balance.Stock.nunique()                                                                                                            
+
+        print("""
+        
+        Performance Summary of {}: 
+        cumulative return:{:.2%}, 
+        sharp_ratio: {:.2%}, 
+        max_drawdown: {:.2%}, 
+        average of daily return:{:.4%}, 
+        std of daily return: {:.4%},
+        number of trades: {}
+        
+        """.format(
+            strategy_name,
+            cumulative_return.values[0], sharp_ratio.values[0], max_drawdown.values[0], 
+                avg_return.values[0], std_return.values[0], num_trades))
+        
 
 
 class BackTest(Portfolio):
