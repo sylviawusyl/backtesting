@@ -127,6 +127,7 @@ class MACross(Strategy):
         stock_data.data['LongMA'] = stock_data.data['Close'].rolling(window=self.long_window).mean()
         #Calculate the signal
         stock_data.data['Signal'] = 0.0
+        #Calculate the Buy signal, if the short moving average is greater than the long moving average first time, then buy
         stock_data.data['Signal'] = np.where(stock_data.data['ShortMA'] > stock_data.data['LongMA'], 1.0, 0.0)
         #Calculate the Sell signal
         stock_data.data['Signal'] = np.where(stock_data.data['ShortMA'] < stock_data.data['LongMA'], -1.0, stock_data.data['Signal'])
@@ -279,19 +280,5 @@ class BackTest(Portfolio):
                     #No action on this day, copy the previous day's row value except for Date
                     self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0]-1, 'Cash']
                     self.balance.loc[i[0], 'Stock'] =  self.balance.loc[i[0]-1, 'Stock']
-                    #self.balance.loc[i[0], 'Total'] = stock_data.data.loc[i[1]['Date'], 'Close'] * self.balance.loc[i[0], 'Stock'] + self.balance.loc[i[0], 'Cash']
-                    self.balance.loc[i[0], 'Total'] =  self.balance.loc[i[0]-1, 'Total']
+                    self.balance.loc[i[0], 'Total'] = stock_data.data.loc[i[1]['Date'], 'Close'] * self.balance.loc[i[0], 'Stock'] + self.balance.loc[i[0], 'Cash']
             i = next(x, None)
-
-    
-    
-        
-#Test Code, need to remove
-qqq = StockData('QQQ')
-qqq.get_data_from_yfinance('QQQ', dt.datetime(1998,12,4), dt.datetime(2022,3,2))
-#need to preprocess the csv to remove gargage data, need to reverse the order of the data.
-print(qqq.data.index[0], qqq.data['Close'][0])
-
-buy_and_hold = BuyAndHold()
-print(buy_and_hold.trades)
->>>>>>> 7c34710 (add data history, fix sd and ed, attemp to debug the no action scenario)
