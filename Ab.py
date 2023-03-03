@@ -276,7 +276,7 @@ class Portfolio(metaclass=ABCMeta):
 
 
 class BackTest(Portfolio):
-    def __init__(self, sd:dt.datetime, ed:dt.datetime, principal=1000000, trade_size=1 , prymiding=1):
+    def __init__(self, sd:dt.datetime, ed:dt.datetime, principal=1, trade_size=1 , prymiding=1):
         super().__init__(principal, trade_size, prymiding, 0)
         self.prymiding_count = 0
         self.start_date = sd
