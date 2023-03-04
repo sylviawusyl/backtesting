@@ -177,6 +177,46 @@ class MAThreshold(Strategy):
             elif row[1]['Signal'] == -1:
                 self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Sell', row[1]['Close']]      
 
+class WeeklyMAThreshold(Strategy):
+    def __init__(self, ma_window:int,  buy_threshold:float, sell_threshold:float,stop_loss:float=0, take_profit:float=0):
+        super().__init__(stop_loss, take_profit)
+        self.ma_window = ma_window
+        self.buy_threshold = buy_threshold
+        self.sell_threshold = sell_threshold
+
+    def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
+        self.stock_ticker = stock_data.ticker
+      
+        if start_date:
+            self.joined_data = stock_data.data.loc[(stock_data.data.index >= start_date) 
+                                                   & (stock_data.data.index <= end_date)].copy()
+        else:
+            self.joined_data = stock_data.data.copy()
+        
+        self.joined_data['dayofweek'] = self.joined_data.index.dayofweek
+        self.joined_data =  self.joined_data[self.joined_data['dayofweek']==4].copy()
+        
+        self.joined_data['MA'] = self.joined_data['Close'].rolling(window=self.ma_window).mean()
+        self.joined_data['price_to_MA'] = self.joined_data['Close'] / self.joined_data['MA']
+        self.joined_data['price_to_MA_long'] = self.joined_data.apply(lambda row: 1 if row['price_to_MA']>self.buy_threshold else 0, axis =1)
+        self.joined_data['price_to_MA_short'] = self.joined_data.apply(lambda row: 1 if row['price_to_MA']<self.sell_threshold else 0, axis =1)
+        
+        self.joined_data['MA_price_to_MA_long'] = self.joined_data['price_to_MA_long'].rolling(window=2).mean()
+        self.joined_data['MA_price_to_MA_short'] = self.joined_data['price_to_MA_short'].rolling(window=2).mean()
+        
+
+        #Calculate the signal
+        self.joined_data['Signal'] = np.where((self.joined_data['MA_price_to_MA_short'] ==1) , -1.0, 
+                                            np.where((self.joined_data['MA_price_to_MA_long'] ==1), 1.0, 0.0) )
+                                            
+        #Generate the trade list
+        for row in self.joined_data.iterrows():
+            if row[1]['Signal'] == 1:
+                self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Buy', row[1]['Close']]
+            elif row[1]['Signal'] == -1:
+                self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Sell', row[1]['Close']] 
+                
+                
 class Threshold(Strategy):
     def __init__(self, signal_data:StockData, indicator, buy_threshold:float, sell_threshold:float, stop_loss:float=0, take_profit:float=0):
         super().__init__(stop_loss, take_profit)
