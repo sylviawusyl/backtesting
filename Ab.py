@@ -275,8 +275,9 @@ class Portfolio(metaclass=ABCMeta):
     @abstractmethod
     def run_backtest(self, strategy:Strategy, stock_data:StockData):
         pass
-
-    def performance_summary(self, strategy_name):
+    
+    @abstractmethod
+    def performance_summary(self, strategy_name, start_date, end_date):
         portValue = self.balance[['Total']]
         
         # cumulative return
@@ -295,6 +296,9 @@ class Portfolio(metaclass=ABCMeta):
         std_return = daily_return.std()
         sharp_ratio = avg_return/std_return    
 
+        trading_dates = end_date - start_date
+        # annual return
+        annual_return = np.power(cumulative_return.values[0], 1/round((trading_dates.days/252)))
         # number of trades
         num_trades = self.balance.Stock.nunique()                                                                                                            
 
@@ -306,12 +310,18 @@ class Portfolio(metaclass=ABCMeta):
         max_drawdown: {:.2%}, 
         average of daily return:{:.4%}, 
         std of daily return: {:.4%},
-        number of trades: {}
+        number of trades: {},
+        trading days: {},
+        annual return: {:.4%}
+
         
         """.format(
             strategy_name,
             cumulative_return.values[0], sharp_ratio.values[0], max_drawdown.values[0], 
-                avg_return.values[0], std_return.values[0], num_trades))
+                avg_return.values[0], std_return.values[0], num_trades,
+                trading_dates.days,
+                annual_return - 1
+                ))
         
 
 
@@ -343,9 +353,13 @@ class BackTest(Portfolio):
         y = strategy.trades.iterrows()
         i = next(x, None)
         j = next(y, None)
-        while i is not None and j is not None:
- 
-            if i[1]['Date'] == j[1]['Date']:
+        while i is not None:
+            if j is None:
+                #No action on this day, copy the previous day's row value except for Date
+                self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0]-1, 'Cash']
+                self.balance.loc[i[0], 'Stock'] =  self.balance.loc[i[0]-1, 'Stock']
+                self.balance.loc[i[0], 'Total'] = stock_data.data.loc[i[1]['Date'], 'Close'] * self.balance.loc[i[0], 'Stock'] + self.balance.loc[i[0], 'Cash']
+            elif i[1]['Date'] == j[1]['Date']:
                 if j[1]['Action'] == 'BuyAll':
                     self.balance.loc[i[0], 'Stock'] = self.trade_size * self.balance.loc[i[0], 'Cash'] / j[1]['Price']
                     self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0], 'Cash'] - self.trade_size * self.balance.loc[i[0], 'Cash']
@@ -397,3 +411,8 @@ class BackTest(Portfolio):
                     self.balance.loc[i[0], 'Stock'] =  self.balance.loc[i[0]-1, 'Stock']
                     self.balance.loc[i[0], 'Total'] = stock_data.data.loc[i[1]['Date'], 'Close'] * self.balance.loc[i[0], 'Stock'] + self.balance.loc[i[0], 'Cash']
             i = next(x, None)
+
+    def performance_summary(self, strategy_name):
+        super().performance_summary(strategy_name, self.start_date, self.end_date)
+
+        
