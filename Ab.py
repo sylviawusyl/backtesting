@@ -221,18 +221,19 @@ class WeeklyMAThreshold(Strategy):
                 
                 
 class Threshold(Strategy):
-    def __init__(self, signal_data:StockData, indicator, buy_threshold:float, sell_threshold:float, stop_loss:float=0, take_profit:float=0):
+    def __init__(self, signal_data:StockData, indicator, buy_threshold:float, sell_threshold:float, signal_ma_window = 20, stop_loss:float=0, take_profit:float=0):
         super().__init__(stop_loss, take_profit)
         self.signal_data = signal_data
         self.indicator = indicator
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
+        self.signal_ma_window = signal_ma_window
 
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
         #clear the trades
         self.trades = self.trades.iloc[0:0]
         self.joined_data = self.joined_data.iloc[0:0]
-        
+
         self.stock_ticker = stock_data.ticker
         self.signal_ticker = self.signal_data.ticker
        
@@ -251,15 +252,15 @@ class Threshold(Strategy):
         #Calculate the indicator (TODO: here the indicator comes from the signal data price, in the future can use other indicators passed to the function)
        
         # self.joined_data['Indicator'] = self.joined_data[self.indicator]
-        self.joined_data['SignalMA20'] = self.joined_data['SignalPrice'].rolling(window=20).mean()
+        self.joined_data['SignalMA'] = self.joined_data['SignalPrice'].rolling(window=self.signal_ma_window).mean()
 
         #Calculate the signal
         # sell signal: price < 30 (sell threshold), and in a downward trend. use sma20>price as a proxy of downward trend
         # buy signal: price > 15 (buy threshold), and in an upward trend. use sma20<price as a proxy of upward trend
         # otherwise, when buy threshold < sell threshold, it won't work (sell rule will always dominates, eg, when price < 30, all sell)
         # (TODO) is there a better way to define the signal or a better proxy of downward/upward trend ?
-        self.joined_data['Signal'] = np.where((self.joined_data['SignalPrice'] < self.sell_threshold) & (self.joined_data['SignalMA20']>self.joined_data['SignalPrice']), -1.0, 
-                                            np.where((self.joined_data['SignalPrice'] > self.buy_threshold)  & (self.joined_data['SignalMA20']<self.joined_data['SignalPrice']), 1.0, 0.0)
+        self.joined_data['Signal'] = np.where((self.joined_data['SignalPrice'] < self.sell_threshold) & (self.joined_data['SignalMA']>self.joined_data['SignalPrice']), -1.0, 
+                                            np.where((self.joined_data['SignalPrice'] > self.buy_threshold)  & (self.joined_data['SignalMA']<self.joined_data['SignalPrice']), 1.0, 0.0)
                                             )
                                             
         #Generate the trade list
