@@ -86,6 +86,7 @@ class Strategy(metaclass=ABCMeta):
         #Action: Buy, Sell, StopLoss, TakeProfit, BuyAll, SellAll
     @abstractmethod
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
+        self.trades = self.trades.iloc[0:0]
         pass
 
 
@@ -96,9 +97,9 @@ class BuyAndHold(Strategy):
         super().__init__(stop_loss, take_profit)
 
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
+        #clear the trades
+        self.trades = self.trades.iloc[0:0]
         #get the start and end date, if the start date is before the stock data start date, use the stock data start date
-        #sd = stock_data.data.index[0] if stock_data.data.index[0] > start_date else start_date
-        #ed = stock_data.data.index[-1] if stock_data.data.index[-1] < end_date else end_date
         # the min and max trade date between the entered start date and end date
         sd = min( [ i  for i in stock_data.data.index if i >= start_date and i <= end_date])
         ed = max( [ i  for i in stock_data.data.index if i >= start_date and i <= end_date])
@@ -117,6 +118,8 @@ class MACross(Strategy):
         self.strategy_name = strategy_name
         
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
+        #clear the trades
+        self.trades = self.trades.iloc[0:0]
         self.stock_ticker = stock_data.ticker
 
         # get the start and end date
@@ -226,6 +229,10 @@ class Threshold(Strategy):
         self.sell_threshold = sell_threshold
 
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
+        #clear the trades
+        self.trades = self.trades.iloc[0:0]
+        self.joined_data = self.joined_data.iloc[0:0]
+        
         self.stock_ticker = stock_data.ticker
         self.signal_ticker = self.signal_data.ticker
        
@@ -281,26 +288,25 @@ class Portfolio(metaclass=ABCMeta):
         portValue = self.balance[['Total']]
         
         # cumulative return
-        cumulative_return = portValue.iloc[-1] / portValue.iloc[0] - 1
+        self.cumulative_return = portValue.iloc[-1] / portValue.iloc[0] - 1
         
         # max_drawdown
         drawdown_window = 252
         rolling_max = portValue.rolling(drawdown_window, min_periods=1).max()
         daily_drawdown = portValue/rolling_max - 1.0
         max_daily_drawdown = daily_drawdown.rolling(drawdown_window, min_periods=1).min()
-        max_drawdown = max_daily_drawdown.min()
+        self.max_drawdown = max_daily_drawdown.min()
 
         # daily return and sharpe ratio
         daily_return = (portValue / portValue.shift(1) - 1) [1:]
-        avg_return = daily_return.mean()
-        std_return = daily_return.std()
-        sharp_ratio = avg_return/std_return    
-
+        self.avg_return = daily_return.mean()
+        self.std_return = daily_return.std()
+        self.sharp_ratio = self.avg_return/self.std_return
         trading_dates = end_date - start_date
         # annual return
-        annual_return = np.power(cumulative_return.values[0], 1/round((trading_dates.days/252)))
+        self.annual_return = np.power(self.cumulative_return.values[0], 1/round((trading_dates.days/252)))
         # number of trades
-        num_trades = self.balance.Stock.nunique()                                                                                                            
+        self.num_trades = self.balance.Stock.nunique()                                                                                                            
 
         print("""
         
@@ -317,10 +323,10 @@ class Portfolio(metaclass=ABCMeta):
         
         """.format(
             strategy_name,
-            cumulative_return.values[0], sharp_ratio.values[0], max_drawdown.values[0], 
-                avg_return.values[0], std_return.values[0], num_trades,
+            self.cumulative_return.values[0], self.sharp_ratio.values[0], self.max_drawdown.values[0], 
+                self.avg_return.values[0], self.std_return.values[0], self.num_trades,
                 trading_dates.days,
-                annual_return - 1
+                self.annual_return - 1
                 ))
         
 
