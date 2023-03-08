@@ -231,8 +231,8 @@ class Threshold(Strategy):
 
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
         #clear the trades
-        self.trades = self.trades.iloc[0:0]
-        self.joined_data = self.joined_data.iloc[0:0]
+        # self.trades = self.trades.iloc[0:0]
+        # self.joined_data = self.joined_data.iloc[0:0]
 
         self.stock_ticker = stock_data.ticker
         self.signal_ticker = self.signal_data.ticker
@@ -285,7 +285,7 @@ class Portfolio(metaclass=ABCMeta):
         pass
     
     @abstractmethod
-    def performance_summary(self, strategy_name, start_date, end_date):
+    def performance_summary(self, strategy_name, start_date, end_date, verbose = True):
         portValue = self.balance[['Total']]
         
         # cumulative return
@@ -309,7 +309,8 @@ class Portfolio(metaclass=ABCMeta):
         # number of trades
         self.num_trades = self.balance.Stock.nunique()                                                                                                            
 
-        print("""
+        if verbose: 
+            print("""
         
         Performance Summary of {}: 
         cumulative return:{:.2%}, 
@@ -329,6 +330,20 @@ class Portfolio(metaclass=ABCMeta):
                 trading_dates.days,
                 self.annual_return - 1
                 ))
+        
+        stats_names = [ 'strategy_name','num_trades',
+        'cumulative_return','annual_return','max_drawdown',
+        'sharp_ratio',  'avg_daily_return', 
+        'std_daily_return','num_trading_days'
+        ]
+
+        stats = [strategy_name, self.num_trades,
+                self.cumulative_return.values[0], self.annual_return - 1, self.max_drawdown.values[0],
+                self.sharp_ratio.values[0], self.avg_return.values[0], self.std_return.values[0], 
+                trading_dates.days
+                ]
+
+        self.summary_result = pd.DataFrame([stats], columns=stats_names)
         
 
 
@@ -419,7 +434,7 @@ class BackTest(Portfolio):
                     self.balance.loc[i[0], 'Total'] = stock_data.data.loc[i[1]['Date'], 'Close'] * self.balance.loc[i[0], 'Stock'] + self.balance.loc[i[0], 'Cash']
             i = next(x, None)
 
-    def performance_summary(self, strategy_name):
-        super().performance_summary(strategy_name, self.start_date, self.end_date)
+    def performance_summary(self, strategy_name, verbose = True):
+        super().performance_summary(strategy_name, self.start_date, self.end_date, verbose = verbose)
 
         
