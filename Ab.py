@@ -115,6 +115,7 @@ class MACross(Strategy):
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
         #clear the trades
         self.trades = pd.DataFrame(columns=['Date','Ticker','Action', 'Price'])
+        self.trades.set_index('Date', inplace=True)
         self.stock_ticker = stock_data.ticker
 
         # get the start and end date
@@ -135,8 +136,8 @@ class MACross(Strategy):
         #Calculate the Sell signal
         self.joined_data['Signal'] = np.where(self.joined_data['ShortMA'] < self.joined_data['LongMA'], -1.0, self.joined_data['Signal'])
 
-        #Generate the trade list
-        self.trades = self.joined_data['Signal', 'Close'].copy()
+        #copy signal and close columns with index to trades
+        self.trades = self.joined_data[['Signal', 'Close']].copy()
         #drop signal = 0 rows
         self.trades = self.trades[self.trades['Signal'] != 0]
         self.trades['Action'] = np.where(self.trades['Signal'] == 1.0, 'Buy', 
@@ -144,7 +145,7 @@ class MACross(Strategy):
         #drop signal column Signal
         self.trades = self.trades.drop(columns=['Signal'])
         self.trades['Ticker'] = self.stock_ticker
-            
+        self.trades = self.trades.rename(columns={'Close':'Price'})
 
 class MAThreshold(Strategy):
     def __init__(self, ma_window:int, buy_threshold:float, sell_threshold:float, stop_loss:float=0, take_profit:float=0):
