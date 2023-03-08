@@ -86,7 +86,6 @@ class Strategy(metaclass=ABCMeta):
         #Action: Buy, Sell, StopLoss, TakeProfit, BuyAll, SellAll
     @abstractmethod
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
-        self.trades = self.trades.iloc[0:0]
         pass
 
 
@@ -97,18 +96,14 @@ class BuyAndHold(Strategy):
         super().__init__(stop_loss, take_profit)
 
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
-        #clear the trades
-        self.trades = self.trades.iloc[0:0]
         #get the start and end date, if the start date is before the stock data start date, use the stock data start date
         # the min and max trade date between the entered start date and end date
+        self.trades = pd.DataFrame(columns=['Date','Ticker','Action', 'Price'])
         sd = min( [ i  for i in stock_data.data.index if i >= start_date and i <= end_date])
         ed = max( [ i  for i in stock_data.data.index if i >= start_date and i <= end_date])
 
-        for row in stock_data.data.iterrows():
-            if row[0] == sd:
-                self.trades.loc[len(self.trades.index)] = [row[0], stock_data.ticker, 'BuyAll', row[1]['Close']]
-            elif row[0] == ed:
-                self.trades.loc[len(self.trades.index)] = [row[0], stock_data.ticker, 'SellAll', row[1]['Close']]
+        self.trades.loc[len(self.trades.index)] = [sd, stock_data.ticker, 'BuyAll', stock_data.data.loc[sd]['Close']]
+        self.trades.loc[len(self.trades.index)] = [ed, stock_data.ticker, 'SellAll', stock_data.data.loc[ed]['Close']]
 
 class MACross(Strategy):
     def __init__(self, short_window:int, long_window:int, stop_loss:float=0, take_profit:float=0, strategy_name = 'MACross'):
@@ -119,7 +114,7 @@ class MACross(Strategy):
         
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
         #clear the trades
-        self.trades = self.trades.iloc[0:0]
+        self.trades = pd.DataFrame(columns=['Date','Ticker','Action', 'Price'])
         self.stock_ticker = stock_data.ticker
 
         # get the start and end date
@@ -141,13 +136,15 @@ class MACross(Strategy):
         self.joined_data['Signal'] = np.where(self.joined_data['ShortMA'] < self.joined_data['LongMA'], -1.0, self.joined_data['Signal'])
 
         #Generate the trade list
-        for row in self.joined_data.iterrows():
- #           if row[1]['Date'] < sd or row[1]['Date'] > ed:
- #               continue
-            if row[1]['Signal'] == 1:
-                self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Buy', row[1]['Close']]
-            elif row[1]['Signal'] == -1:
-                self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Sell', row[1]['Close']]       
+        self.trades = self.joined_data['Signal', 'Close'].copy()
+        #drop signal = 0 rows
+        self.trades = self.trades[self.trades['Signal'] != 0]
+        self.trades['Action'] = np.where(self.trades['Signal'] == 1.0, 'Buy', 
+                                         np.where(self.trades['Signal'] == -1.0, 'Sell', 'Hold'))
+        #drop signal column Signal
+        self.trades = self.trades.drop(columns=['Signal'])
+        self.trades['Ticker'] = self.stock_ticker
+            
 
 class MAThreshold(Strategy):
     def __init__(self, ma_window:int, buy_threshold:float, sell_threshold:float, stop_loss:float=0, take_profit:float=0):
@@ -157,6 +154,7 @@ class MAThreshold(Strategy):
         self.sell_threshold = sell_threshold
 
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
+        self.trades = pd.DataFrame(columns=['Date','Ticker','Action', 'Price'])
         self.stock_ticker = stock_data.ticker
       
         if start_date:
@@ -188,6 +186,7 @@ class WeeklyMAThreshold(Strategy):
         self.sell_threshold = sell_threshold
 
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
+        self.trades = pd.DataFrame(columns=['Date','Ticker','Action', 'Price'])
         self.stock_ticker = stock_data.ticker
       
         if start_date:
@@ -231,8 +230,7 @@ class Threshold(Strategy):
 
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
         #clear the trades
-        # self.trades = self.trades.iloc[0:0]
-        # self.joined_data = self.joined_data.iloc[0:0]
+        self.trades = pd.DataFrame(columns=['Date','Ticker','Action', 'Price'])
 
         self.stock_ticker = stock_data.ticker
         self.signal_ticker = self.signal_data.ticker
@@ -262,13 +260,18 @@ class Threshold(Strategy):
         self.joined_data['Signal'] = np.where((self.joined_data['SignalPrice'] < self.sell_threshold) & (self.joined_data['SignalMA']>self.joined_data['SignalPrice']), -1.0, 
                                             np.where((self.joined_data['SignalPrice'] > self.buy_threshold)  & (self.joined_data['SignalMA']<self.joined_data['SignalPrice']), 1.0, 0.0)
                                             )
-                                            
         #Generate the trade list
-        for row in self.joined_data.iterrows():
-            if row[1]['Signal'] == 1:
-                self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Buy', row[1]['StockPrice']]
-            elif row[1]['Signal'] == -1:
-                self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Sell', row[1]['StockPrice']]       
+        #first copy the joined_data to trades , only keep the index, Signal, StockPrice
+        self.trades = self.joined_data[['Signal','StockPrice']].copy()
+        #drop signal = 0 rows
+        self.trades = self.trades[self.trades['Signal'] != 0]
+        self.trades['Action'] = np.where(self.trades['Signal'] == 1.0, 'Buy', 
+                                         np.where(self.trades['Signal'] == -1.0, 'Sell', 'Hold'))
+        #drop signal column Signal
+        self.trades = self.trades.drop(columns=['Signal'])
+        self.trades['Ticker'] = self.stock_ticker
+        self.trades = self.trades.rename(columns={'StockPrice':'Price'})
+
 
 
 class Portfolio(metaclass=ABCMeta):
@@ -305,7 +308,10 @@ class Portfolio(metaclass=ABCMeta):
         self.sharp_ratio = self.avg_return/self.std_return
         trading_dates = end_date - start_date
         # annual return
-        self.annual_return = np.power(self.cumulative_return.values[0], 1/round((trading_dates.days/252)))
+        if round((trading_dates.days/252)) == 0:
+            self.annual_return = self.cumulative_return.values[0] + 1
+        else:
+            self.annual_return = np.power(self.cumulative_return.values[0], 1/round((trading_dates.days/252)))
         # number of trades
         self.num_trades = self.balance.Stock.nunique()                                                                                                            
 
@@ -357,9 +363,8 @@ class BackTest(Portfolio):
     def run_backtest(self, strategy:Strategy, stock_data:StockData):
         sd = min( [ i  for i in stock_data.data.index if i >= self.start_date and i <= self.end_date])
         ed = max( [ i  for i in stock_data.data.index if i >= self.start_date and i <= self.end_date])
-        self.balance['Date'] = stock_data.data.loc[sd:ed].index
         
-        #self.balance['Date'] = np.where((stock_data.data.index >= self.start_date) & (stock_data.data.index <= self.end_date), stock_data.data.index, None)
+        self.balance['Date'] = stock_data.data.loc[sd:ed].index
         
         self.balance['Cash'] = 0
         self.balance['Stock'] = 0
@@ -370,11 +375,16 @@ class BackTest(Portfolio):
         self.balance.loc[0, 'Stock'] = 0                
         self.balance.loc[0, 'Total'] = self.principal
         
-
+        #reset strategy index
+        strategy.trades = strategy.trades.reset_index(drop=False)
         x = self.balance.iterrows()
         y = strategy.trades.iterrows()
         i = next(x, None)
         j = next(y, None)
+        if j is None:
+            print("No action on this strategy")
+            return
+        
         while i is not None:
             if j is None:
                 #No action on this day, copy the previous day's row value except for Date
