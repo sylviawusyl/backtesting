@@ -280,7 +280,37 @@ class Threshold(Strategy):
         self.trades['Ticker'] = self.stock_ticker
         self.trades = self.trades.rename(columns={'StockPrice':'Price'})
 
+class CustomizedStrategy(Strategy):
+    def __init__(self, signals_df, stop_loss:float=0, take_profit:float=0):
+        super().__init__(stop_loss, take_profit)
+        self.signals_df = signals_df
 
+    def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
+        self.stock_ticker = stock_data.ticker
+       
+        # make sure dates and rows are aligned in signal data and stock data
+        # it should only include dates that both signal data and stock data are available 
+        self.joined_data = stock_data.data[['Close']].rename(columns={'Close':'Price'}).merge(
+                                             self.signals_df[['Signal']],
+                                             how = 'inner', left_index = True, right_index = True).sort_index()
+
+        # if there is input for sd and ed, then filter the data for the date range only 
+        if start_date:
+            self.joined_data = self.joined_data.loc[(self.joined_data.index >= start_date) & (self.joined_data.index <= end_date)].copy()
+        else:
+            pass
+
+        # The signals are already from signals_df: self.joined_data['Signal']
+
+        #Generate the trade list
+        #first copy the joined_data to trades , only keep the index, Signal, Price & drop signal = 0 rows
+        self.trades = self.joined_data.loc[self.joined_data.Signal!=0, ['Signal','Price']].copy()
+        self.trades['Ticker'] = self.stock_ticker
+        self.trades['Action'] = np.where(self.trades['Signal'] == 1.0, 'Buy', 
+                                         np.where(self.trades['Signal'] == -1.0, 'Sell', 'Hold'))
+        #drop signal column Signal
+        self.trades = self.trades.drop(columns=['Signal'])
+        
 
 class Portfolio(metaclass=ABCMeta):
     def __init__(self, principal, trade_size, prymiding, margin):
