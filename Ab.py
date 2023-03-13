@@ -75,8 +75,15 @@ class StockData(object):
         self.data.set_index('Date', inplace=True)
         #self.data.sort_values(by='Date', inplace=True)
 
-        
-        
+    def get_indicators(self, column = 'Close', ma_windows = [5,10,20,50,200], below_thresholds = [30], above_thresholds = [15]):
+        for ma_window in ma_windows:
+            self.data['MA{}'.format(ma_window)] = self.data[column].rolling(window=ma_window).mean()
+            self.data['price_to_MA{}'.format(ma_window)] = self.data[column] / self.data['MA{}'.format(ma_window)]
+        for below_threshold in below_thresholds:
+            self.data['below{}'.format(below_threshold)] = np.where(self.data[column]<below_threshold, 1, 0)
+        for above_threshold in above_thresholds:
+            self.data['above{}'.format(above_threshold)] = np.where(self.data[column]>above_threshold, 1, 0)
+               
         
 class Strategy(metaclass=ABCMeta):
     def __init__(self, stop_loss:float, take_profit:float):
@@ -273,7 +280,37 @@ class Threshold(Strategy):
         self.trades['Ticker'] = self.stock_ticker
         self.trades = self.trades.rename(columns={'StockPrice':'Price'})
 
+class CustomizedStrategy(Strategy):
+    def __init__(self, signals_df, stop_loss:float=0, take_profit:float=0):
+        super().__init__(stop_loss, take_profit)
+        self.signals_df = signals_df
 
+    def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
+        self.stock_ticker = stock_data.ticker
+       
+        # make sure dates and rows are aligned in signal data and stock data
+        # it should only include dates that both signal data and stock data are available 
+        self.joined_data = stock_data.data[['Close']].rename(columns={'Close':'Price'}).merge(
+                                             self.signals_df[['Signal']],
+                                             how = 'inner', left_index = True, right_index = True).sort_index()
+
+        # if there is input for sd and ed, then filter the data for the date range only 
+        if start_date:
+            self.joined_data = self.joined_data.loc[(self.joined_data.index >= start_date) & (self.joined_data.index <= end_date)].copy()
+        else:
+            pass
+
+        # The signals are already from signals_df: self.joined_data['Signal']
+
+        #Generate the trade list
+        #first copy the joined_data to trades , only keep the index, Signal, Price & drop signal = 0 rows
+        self.trades = self.joined_data.loc[self.joined_data.Signal!=0, ['Signal','Price']].copy()
+        self.trades['Ticker'] = self.stock_ticker
+        self.trades['Action'] = np.where(self.trades['Signal'] == 1.0, 'Buy', 
+                                         np.where(self.trades['Signal'] == -1.0, 'Sell', 'Hold'))
+        #drop signal column Signal
+        self.trades = self.trades.drop(columns=['Signal'])
+        
 
 class Portfolio(metaclass=ABCMeta):
     def __init__(self, principal, trade_size, prymiding, margin):
