@@ -78,6 +78,7 @@ class StockData(object):
     def get_indicators(self, column = 'Close', ma_windows = [5,10,20,50,200], below_thresholds = [30], above_thresholds = [15]):
         for ma_window in ma_windows:
             self.data['MA{}'.format(ma_window)] = self.data[column].rolling(window=ma_window).mean()
+            self.data['price_to_MA{}'.format(ma_window)] = self.data[column] / self.data['MA{}'.format(ma_window)]
         for below_threshold in below_thresholds:
             self.data['below{}'.format(below_threshold)] = np.where(self.data[column]<below_threshold, 1, 0)
         for above_threshold in above_thresholds:
