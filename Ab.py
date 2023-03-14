@@ -2,7 +2,7 @@ import pandas as pd
 import yfinance as yf
 import datetime as dt   
 import numpy as np
-
+import sqlite3 as sql
 from abc import abstractmethod, ABCMeta
 
 class StockData(object):
@@ -74,6 +74,12 @@ class StockData(object):
         self.data['Date'] = pd.to_datetime(self.data['Date'])
         self.data.set_index('Date', inplace=True)
         #self.data.sort_values(by='Date', inplace=True)
+    def get_data_from_db(self, db_path:str='data/stock_data.db', limit:int=100000):
+        conn = sql.connect(db_path)
+        print("SELECT * FROM stock_history Where Ticker='{}' limit {}".format(self.ticker,limit))
+        self.data = pd.read_sql_query("SELECT * FROM stock_history Where Ticker='{}' limit {}".format(self.ticker,limit), conn)
+        self.data.set_index(['Date'],inplace=True)
+        conn.close()
         
     def get_indicators(self, column = 'Close', ma_windows = [5,10,20,50,200], below_thresholds = [30], above_thresholds = [15]):
         for ma_window in ma_windows:
