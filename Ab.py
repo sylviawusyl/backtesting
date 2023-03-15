@@ -17,6 +17,8 @@ class StockData(object):
         self.start_date = start_date
         self.end_date = end_date
         self.data = yf.download(self.ticker, start=self.start_date, end=self.end_date)
+        self.start_date = self.data.index[0]
+        self.end_date = self.data.index[-1]
         #self.data.reset_index(inplace=True)
     
     def get_data_history_from_yfinance(self, ticker:str, period:str, interval:str,start_date, end_date):
@@ -366,25 +368,26 @@ class Portfolio(metaclass=ABCMeta):
 
         if verbose: 
             print("""
-        
-        Performance Summary of {}: 
-        cumulative return:{:.2%}, 
-        sharp_ratio: {:.2%}, 
-        max_drawdown: {:.2%}, 
-        average of daily return:{:.4%}, 
-        std of daily return: {:.4%},
-        number of trades: {},
-        trading days: {},
-        annual return: {:.4%}
-
-        
+Performance Summary of {}: 
+cumulative return      : {:.2%},
+compound anual return  : {:.4%} 
+max_drawdown           : {:.2%}, 
+sharp_ratio            : {:.2%}, 
+average of daily return: {:.4%}, 
+std of daily return    : {:.4%},
+number of trades       : {},
+trading days           : {},
         """.format(
             self.name,
-            self.cumulative_return.values[0], self.sharp_ratio.values[0], self.max_drawdown.values[0], 
-                self.avg_return.values[0], self.std_return.values[0], self.num_trades,
-                trading_dates.days,
-                self.annual_return - 1
-                ))
+            self.cumulative_return.values[0],
+            self.annual_return - 1,
+            self.max_drawdown.values[0],
+            self.sharp_ratio.values[0],
+            self.avg_return.values[0],
+            self.std_return.values[0],
+            self.num_trades,
+            trading_dates.days
+            ))
         
         stats_names = [ 'name','num_trades',
         'cumulative_return','annual_return','max_drawdown',
@@ -417,12 +420,14 @@ class BackTest(Portfolio):
     def __record_sell(self, ticker:str, date:dt.datetime, price:float, quantity:float):
         #put the sell order into the trade list,find the last buy order with empty sell date
         i = self.trade_records[self.trade_records['Ticker'] == ticker][self.trade_records['Sell Date'].isnull()].index
+        if i is None:
+            return
         self.trade_records.loc[i, 'Sell Date'] = date
         self.trade_records.loc[i, 'Sell Price'] = price
         self.trade_records.loc[i, 'Profit'] = (price - self.trade_records.loc[i, 'Buy Price'].values[0]) * quantity
         self.trade_records.loc[i, 'Profit %'] = (price - self.trade_records.loc[i, 'Buy Price'].values[0]) / self.trade_records.loc[i, 'Buy Price'].values[0]
 
-    def run_backtest(self, strategy:Strategy, stock_data:StockData):
+    def run_backtest(self, strategy:Strategy, stock_data:StockData , weekly_buy=False, weekly_sell=False):
         sd = min( [ i  for i in stock_data.data.index if i >= self.start_date and i <= self.end_date])
         ed = max( [ i  for i in stock_data.data.index if i >= self.start_date and i <= self.end_date])
         self.name = strategy.name
@@ -454,7 +459,13 @@ class BackTest(Portfolio):
                 self.balance.loc[i[0], 'Stock'] =  self.balance.loc[i[0]-1, 'Stock']
                 self.balance.loc[i[0], 'Total'] = stock_data.data.loc[i[1]['Date'], 'Close'] * self.balance.loc[i[0], 'Stock'] + self.balance.loc[i[0], 'Cash']
             elif i[1]['Date'] == j[1]['Date']:
-                if j[1]['Action'] == 'BuyAll':
+                if (weekly_buy and i[1]['Date'].weekday() != 4 and j[1]['Action'] == 'Buy') or (weekly_sell and i[1]['Date'].weekday() != 4 and j[1]['Action'] == 'Sell'):
+                    #No action on this day, copy the previous day's row value except for Date
+                    self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0]-1, 'Cash']
+                    self.balance.loc[i[0], 'Stock'] =  self.balance.loc[i[0]-1, 'Stock']
+                    self.balance.loc[i[0], 'Total'] = stock_data.data.loc[i[1]['Date'], 'Close'] * self.balance.loc[i[0], 'Stock'] + self.balance.loc[i[0], 'Cash']
+
+                elif j[1]['Action'] == 'BuyAll':
                     self.balance.loc[i[0], 'Stock'] = self.trade_size * self.balance.loc[i[0], 'Cash'] / j[1]['Price']
                     self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0], 'Cash'] - self.trade_size * self.balance.loc[i[0], 'Cash']
                     self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0], 'Cash'] + self.balance.loc[i[0], 'Stock'] * j[1]['Price']
@@ -511,7 +522,24 @@ class BackTest(Portfolio):
                     self.balance.loc[i[0], 'Total'] = stock_data.data.loc[i[1]['Date'], 'Close'] * self.balance.loc[i[0], 'Stock'] + self.balance.loc[i[0], 'Cash']
             i = next(x, None)
 
+            if self.balance.iloc[-1]['Stock'] > 0:
+                self.__record_sell(stock_data.ticker, self.end_date, stock_data.data.loc[self.end_date, 'Close'], self.balance.iloc[-1]['Stock'])
+
     def performance_summary(self, v = True):
         super().performance_summary(start_date=self.start_date,end_date=self.end_date,verbose=v)
+        #trade_record analysis
+        #betting average
+        gain = len(self.trade_records.loc[self.trade_records['Profit %']> 0])
+        loss = len(self.trade_records.loc[self.trade_records['Profit %']<= 0])
+        bet_avg = gain/(gain+loss)
+        gain_avg = self.trade_records.loc[self.trade_records['Profit %'] > 0, 'Profit %'].mean()
+        loss_avg = self.trade_records.loc[self.trade_records['Profit %'] <= 0,'Profit %'].mean()
+        print('Betting Average  : {:.2%}'.format(bet_avg))
+        print('Gain Average     : {:.2%}'.format(gain_avg))
+        print('Loss Average     : {:.2%}'.format(loss_avg))
+        print('Risk Reward Ratio: {:.2f}'.format(gain_avg/-loss_avg))
+        print('Gain STD         : {:.2%}'.format(self.trade_records.loc[self.trade_records['Profit %'] > 0, 'Profit %'].std()))
+        print('Loss STD         : {:.2%}'.format(self.trade_records.loc[self.trade_records['Profit %'] <= 0, 'Profit %'].std()))
+
 
         
