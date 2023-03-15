@@ -92,10 +92,11 @@ class StockData(object):
         
         
 class Strategy(metaclass=ABCMeta):
-    def __init__(self, stop_loss:float, take_profit:float):
+    def __init__(self, name:str, stop_loss:float, take_profit:float):
         self.stop_loss = stop_loss
         self.take_profit = take_profit
         self.trades = pd.DataFrame(columns=['Date','Ticker','Action', 'Price'])
+        self.name = name
         #Action: Buy, Sell, StopLoss, TakeProfit, BuyAll, SellAll
     @abstractmethod
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
@@ -105,8 +106,8 @@ class Strategy(metaclass=ABCMeta):
     
 #Simple implementation of Buy and Hold strategy of above Strategy class
 class BuyAndHold(Strategy):
-    def __init__(self,stop_loss:float=0, take_profit:float=0):
-        super().__init__(stop_loss, take_profit)
+    def __init__(self, name:str='Buy and Hold', stop_loss:float=0, take_profit:float=0):
+        super().__init__(name, stop_loss, take_profit)
 
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
         #get the start and end date, if the start date is before the stock data start date, use the stock data start date
@@ -119,11 +120,11 @@ class BuyAndHold(Strategy):
         self.trades.loc[len(self.trades.index)] = [ed, stock_data.ticker, 'SellAll', stock_data.data.loc[ed]['Close']]
 
 class MACross(Strategy):
-    def __init__(self, short_window:int, long_window:int, stop_loss:float=0, take_profit:float=0, strategy_name = 'MACross'):
-        super().__init__(stop_loss, take_profit)
+    def __init__(self,name:str='MA Cross', short_window:int=50, long_window:int=200, stop_loss:float=0, take_profit:float=0):
+        stg_name = '{} {}/{}'.format(name,short_window,long_window)
+        super().__init__(stg_name, stop_loss, take_profit)
         self.short_window = short_window
         self.long_window = long_window
-        self.strategy_name = strategy_name
         
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
         #clear the trades
@@ -161,8 +162,9 @@ class MACross(Strategy):
         self.trades = self.trades.rename(columns={'Close':'Price'})
 
 class MAThreshold(Strategy):
-    def __init__(self, ma_window:int, buy_threshold:float, sell_threshold:float, stop_loss:float=0, take_profit:float=0):
-        super().__init__(stop_loss, take_profit)
+    def __init__(self, name='MA TH', ma_window:int = 20, buy_threshold:float=15, sell_threshold:float=30, stop_loss:float=0, take_profit:float=0):
+        stg_name = '{} {}/{} MA {}'.format(name,buy_threshold,sell_threshold,ma_window)
+        super().__init__(stg_name, stop_loss, take_profit)
         self.ma_window = ma_window
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
@@ -193,8 +195,9 @@ class MAThreshold(Strategy):
                 self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Sell', row[1]['Close']]      
 
 class WeeklyMAThreshold(Strategy):
-    def __init__(self, ma_window:int,  buy_threshold:float, sell_threshold:float,stop_loss:float=0, take_profit:float=0):
-        super().__init__(stop_loss, take_profit)
+    def __init__(self, name:str='W MA TH', ma_window:int=20,  buy_threshold:float=15, sell_threshold:float=30,stop_loss:float=0, take_profit:float=0):
+        stg_name = '{} {}/{} MA {}'.format(name,buy_threshold,sell_threshold,ma_window)
+        super().__init__(stg_name, stop_loss, take_profit)
         self.ma_window = ma_window
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
@@ -234,8 +237,9 @@ class WeeklyMAThreshold(Strategy):
                 
                 
 class Threshold(Strategy):
-    def __init__(self, signal_data:StockData, indicator, buy_threshold:float, sell_threshold:float, signal_ma_window = 20, stop_loss:float=0, take_profit:float=0):
-        super().__init__(stop_loss, take_profit)
+    def __init__(self, signal_data:StockData,indicator, name:str='TH', buy_threshold:float=15, sell_threshold:float=30, signal_ma_window = 20, stop_loss:float=0, take_profit:float=0):
+        stg_name = '{} {}/{} MA {}'.format(name,buy_threshold,sell_threshold,signal_ma_window)
+        super().__init__(stg_name, stop_loss, take_profit)
         self.signal_data = signal_data
         self.indicator = indicator
         self.buy_threshold = buy_threshold
@@ -287,8 +291,8 @@ class Threshold(Strategy):
         self.trades = self.trades.rename(columns={'StockPrice':'Price'})
 
 class CustomizedStrategy(Strategy):
-    def __init__(self, signals_df, stop_loss:float=0, take_profit:float=0):
-        super().__init__(stop_loss, take_profit)
+    def __init__(self, signals_df, name:str='Customized',stop_loss:float=0, take_profit:float=0):
+        super().__init__(name, stop_loss, take_profit)
         self.signals_df = signals_df
 
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
@@ -326,13 +330,14 @@ class Portfolio(metaclass=ABCMeta):
         self.margin = margin
         #Real account balance should be Cash+Stock-Margin = Total
         self.balance = pd.DataFrame(columns=['Date','Cash','Stock','Total','Margin'])
+        self.name = None
         
     @abstractmethod
     def run_backtest(self, strategy:Strategy, stock_data:StockData):
         pass
     
     @abstractmethod
-    def performance_summary(self, strategy_name, start_date, end_date, verbose = True):
+    def performance_summary(self, start_date, end_date, verbose = True):
         portValue = self.balance[['Total']]
         
         # cumulative return
@@ -374,20 +379,20 @@ class Portfolio(metaclass=ABCMeta):
 
         
         """.format(
-            strategy_name,
+            self.name,
             self.cumulative_return.values[0], self.sharp_ratio.values[0], self.max_drawdown.values[0], 
                 self.avg_return.values[0], self.std_return.values[0], self.num_trades,
                 trading_dates.days,
                 self.annual_return - 1
                 ))
         
-        stats_names = [ 'strategy_name','num_trades',
+        stats_names = [ 'name','num_trades',
         'cumulative_return','annual_return','max_drawdown',
         'sharp_ratio',  'avg_daily_return', 
         'std_daily_return','num_trading_days'
         ]
 
-        stats = [strategy_name, self.num_trades,
+        stats = [self.name, self.num_trades,
                 self.cumulative_return.values[0], self.annual_return - 1, self.max_drawdown.values[0],
                 self.sharp_ratio.values[0], self.avg_return.values[0], self.std_return.values[0], 
                 trading_dates.days
@@ -403,11 +408,24 @@ class BackTest(Portfolio):
         self.prymiding_count = 0
         self.start_date = sd
         self.end_date = ed
-        
+        self.trade_records = pd.DataFrame(columns=['Buy Date','Sell Date','Ticker','Quant','Buy Price','Sell Price','Profit', 'Profit %'])
+
+    def __record_buy(self, ticker:str, date:dt.datetime, price:float, quantity:float):
+        #put the buy order into the trade list
+        self.trade_records.loc[len(self.trade_records)] = [date, np.nan, ticker, quantity, price, np.nan, np.nan, np.nan]
+
+    def __record_sell(self, ticker:str, date:dt.datetime, price:float, quantity:float):
+        #put the sell order into the trade list,find the last buy order with empty sell date
+        i = self.trade_records[self.trade_records['Ticker'] == ticker][self.trade_records['Sell Date'].isnull()].index
+        self.trade_records.loc[i, 'Sell Date'] = date
+        self.trade_records.loc[i, 'Sell Price'] = price
+        self.trade_records.loc[i, 'Profit'] = (price - self.trade_records.loc[i, 'Buy Price'].values[0]) * quantity
+        self.trade_records.loc[i, 'Profit %'] = (price - self.trade_records.loc[i, 'Buy Price'].values[0]) / self.trade_records.loc[i, 'Buy Price'].values[0]
+
     def run_backtest(self, strategy:Strategy, stock_data:StockData):
         sd = min( [ i  for i in stock_data.data.index if i >= self.start_date and i <= self.end_date])
         ed = max( [ i  for i in stock_data.data.index if i >= self.start_date and i <= self.end_date])
-        
+        self.name = strategy.name
         self.balance['Date'] = stock_data.data.loc[sd:ed].index
         
         self.balance['Cash'] = 0
@@ -440,12 +458,14 @@ class BackTest(Portfolio):
                     self.balance.loc[i[0], 'Stock'] = self.trade_size * self.balance.loc[i[0], 'Cash'] / j[1]['Price']
                     self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0], 'Cash'] - self.trade_size * self.balance.loc[i[0], 'Cash']
                     self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0], 'Cash'] + self.balance.loc[i[0], 'Stock'] * j[1]['Price']
-                    
+                    self.__record_buy(stock_data.ticker, i[1]['Date'], j[1]['Price'], self.balance.loc[i[0], 'Stock'])
 
                 elif j[1]['Action'] == 'SellAll':
+                    self.__record_sell(stock_data.ticker, i[1]['Date'], j[1]['Price'],self.balance.loc[i[0], 'Stock'])
                     self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0]-1, 'Stock'] * j[1]['Price']
                     self.balance.loc[i[0], 'Stock'] = 0
                     self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0], 'Cash'] + self.balance.loc[i[0], 'Stock'] * j[1]['Price']
+
                 elif j[1]['Action'] == 'Buy':
                     if self.prymiding_count < self.prymiding:
                         self.prymiding_count = self.prymiding_count + 1
@@ -455,6 +475,7 @@ class BackTest(Portfolio):
                         self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0] - 1, 'Cash'] - self.trade_size * self.balance.loc[i[0] - 1, 'Cash']
                         # today's balance = cash + stock value
                         self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0], 'Cash'] + self.balance.loc[i[0], 'Stock'] * j[1]['Price']
+                        self.__record_buy(stock_data.ticker, i[1]['Date'], j[1]['Price'],  self.balance.loc[i[0], 'Stock'])
                     else:                        
                         #No action on this day, copy the previous day's row value except for Date
                         self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0]-1, 'Cash']
@@ -468,6 +489,8 @@ class BackTest(Portfolio):
                         self.balance.loc[i[0], 'Stock'] = self.balance.loc[i[0] - 1, 'Stock'] - self.trade_size * self.balance.loc[i[0] - 1, 'Stock']
                         self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0], 'Cash'] + self.balance.loc[i[0], 'Stock'] * j[1]['Price']
                         self.prymiding_count = self.prymiding_count - 1
+                        self.__record_sell(stock_data.ticker, i[1]['Date'], j[1]['Price'],self.balance.loc[i[0] - 1, 'Stock'])
+                        
                     else:
                         #No action on this day, copy the previous day's row value except for Date
                         self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0]-1, 'Cash']
@@ -488,7 +511,7 @@ class BackTest(Portfolio):
                     self.balance.loc[i[0], 'Total'] = stock_data.data.loc[i[1]['Date'], 'Close'] * self.balance.loc[i[0], 'Stock'] + self.balance.loc[i[0], 'Cash']
             i = next(x, None)
 
-    def performance_summary(self, strategy_name, verbose = True):
-        super().performance_summary(strategy_name, self.start_date, self.end_date, verbose = verbose)
+    def performance_summary(self, v = True):
+        super().performance_summary(start_date=self.start_date,end_date=self.end_date,verbose=v)
 
         
