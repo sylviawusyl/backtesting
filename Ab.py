@@ -133,7 +133,11 @@ class MACross(Strategy):
         self.trades = pd.DataFrame(columns=['Date','Ticker','Action', 'Price'])
         self.trades.set_index('Date', inplace=True)
         self.stock_ticker = stock_data.ticker
-
+        #check if the columns are present in the stock data
+        if 'MA{}'.format(self.short_window) not in stock_data.data.columns:
+            stock_data.get_indicators('Close',ma_windows=[self.short_window])
+        if 'MA{}'.format(self.long_window) not in stock_data.data.columns:
+            stock_data.get_indicators('Close',ma_windows=[self.long_window])
         # get the start and end date
         # if there is input for sd and ed, then filter the data for the date range only 
         if start_date:
@@ -143,8 +147,9 @@ class MACross(Strategy):
             self.joined_data = stock_data.data.copy()
         
         #Calculate the short and long moving average
-        self.joined_data['ShortMA'] = self.joined_data['Close'].rolling(window=self.short_window).mean()
-        self.joined_data['LongMA'] = self.joined_data['Close'].rolling(window=self.long_window).mean()
+        self.joined_data['ShortMA'] = stock_data.data['MA{}'.format(self.short_window)]
+        self.joined_data['LongMA'] = stock_data.data['MA{}'.format(self.long_window)]
+
         #Calculate the signal
         self.joined_data['Signal'] = 0.0
         #Calculate the Buy signal, if the short moving average is greater than the long moving average first time, then buy
@@ -174,15 +179,17 @@ class MAThreshold(Strategy):
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
         self.trades = pd.DataFrame(columns=['Date','Ticker','Action', 'Price'])
         self.stock_ticker = stock_data.ticker
-      
+        ma_str = 'MA{}'.format(self.ma_window)
+        if ma_str not in stock_data.data.columns:
+            stock_data.get_indicators('Close',ma_windows=[self.ma_window])
+
         if start_date:
             self.joined_data = stock_data.data.loc[(stock_data.data.index >= start_date) 
                                                    & (stock_data.data.index <= end_date)].copy()
         else:
             self.joined_data = stock_data.data.copy()
-
-        self.joined_data['MA'] = self.joined_data['Close'].rolling(window=self.ma_window).mean()
-        self.joined_data['price_to_MA'] = self.joined_data['Close'] / self.joined_data['MA']
+            
+        self.joined_data['price_to_MA'] = self.joined_data['Close'] / self.joined_data[ma_str]
 
         #Calculate the signal
         self.joined_data['Signal'] = np.where((self.joined_data['price_to_MA'] < self.sell_threshold) , -1.0, 
@@ -207,7 +214,9 @@ class WeeklyMAThreshold(Strategy):
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
         self.trades = pd.DataFrame(columns=['Date','Ticker','Action', 'Price'])
         self.stock_ticker = stock_data.ticker
-      
+        ma_str = 'MA{}'.format(self.ma_window)
+        if ma_str not in stock_data.data.columns:
+            stock_data.get_indicators('Close',ma_windows=[self.ma_window])
         if start_date:
             self.joined_data = stock_data.data.loc[(stock_data.data.index >= start_date) 
                                                    & (stock_data.data.index <= end_date)].copy()
@@ -217,8 +226,7 @@ class WeeklyMAThreshold(Strategy):
         self.joined_data['dayofweek'] = self.joined_data.index.dayofweek
         self.joined_data =  self.joined_data[self.joined_data['dayofweek']==4].copy()
         
-        self.joined_data['MA'] = self.joined_data['Close'].rolling(window=self.ma_window).mean()
-        self.joined_data['price_to_MA'] = self.joined_data['Close'] / self.joined_data['MA']
+        self.joined_data['price_to_MA'] = self.joined_data['Close'] / self.joined_data[ma_str]
         self.joined_data['price_to_MA_long'] = self.joined_data.apply(lambda row: 1 if row['price_to_MA']>self.buy_threshold else 0, axis =1)
         self.joined_data['price_to_MA_short'] = self.joined_data.apply(lambda row: 1 if row['price_to_MA']<self.sell_threshold else 0, axis =1)
         
@@ -333,6 +341,7 @@ class Portfolio(metaclass=ABCMeta):
         #Real account balance should be Cash+Stock-Margin = Total
         self.balance = pd.DataFrame(columns=['Date','Cash','Stock','Total','Margin'])
         self.name = None
+        self.trade_records = pd.DataFrame(columns=['Buy Date','Sell Date','Ticker','Quant','Buy Price','Sell Price','Profit', 'Profit %'])
         
     @abstractmethod
     def run_backtest(self, strategy:Strategy, stock_data:StockData):
@@ -364,19 +373,35 @@ class Portfolio(metaclass=ABCMeta):
         else:
             self.annual_return = np.power(self.cumulative_return.values[0], 1/round((trading_dates.days/252)))
         # number of trades
-        self.num_trades = self.balance.Stock.nunique()                                                                                                            
+        self.num_trades = self.balance.Stock.nunique()
+        
+        #trade_record analysis
+        #betting average
+        gain = len(self.trade_records.loc[self.trade_records['Profit %']> 0])
+        loss = len(self.trade_records.loc[self.trade_records['Profit %']<= 0])
+        bet_avg = gain/(gain+loss)
+        gain_avg = self.trade_records.loc[self.trade_records['Profit %'] > 0, 'Profit %'].mean()
+        loss_avg = self.trade_records.loc[self.trade_records['Profit %'] <= 0,'Profit %'].mean()
+        gain_std = self.trade_records.loc[self.trade_records['Profit %'] > 0, 'Profit %'].std()
+        loss_std = self.trade_records.loc[self.trade_records['Profit %'] <= 0,'Profit %'].std()                                                                                      
 
         if verbose: 
             print("""
-Performance Summary of {}: 
-cumulative return      : {:.2%},
+{}: 
+cumulative return      : {:.2%}
 compound anual return  : {:.4%} 
-max_drawdown           : {:.2%}, 
-sharp_ratio            : {:.2%}, 
-average of daily return: {:.4%}, 
-std of daily return    : {:.4%},
+max_drawdown           : {:.2%}
+sharp_ratio            : {:.2%}
+average of daily return: {:.4%}
+std of daily return    : {:.4%}
 number of trades       : {},
 trading days           : {},
+Betting Average        : {:.2%}
+Gain Average           : {:.2%}
+Loss Average           : {:.2%}
+Risk Reward Ratio      : {:.2f}
+Gain STD               : {:.2%}
+Loss STD               : {:.2%}
         """.format(
             self.name,
             self.cumulative_return.values[0],
@@ -386,19 +411,37 @@ trading days           : {},
             self.avg_return.values[0],
             self.std_return.values[0],
             self.num_trades,
-            trading_dates.days
+            trading_dates.days,
+            bet_avg,
+            gain_avg,
+            loss_avg,
+            gain_avg/-loss_avg,
+            gain_std,
+            loss_std
             ))
         
         stats_names = [ 'name','num_trades',
         'cumulative_return','annual_return','max_drawdown',
         'sharp_ratio',  'avg_daily_return', 
-        'std_daily_return','num_trading_days'
+        'std_daily_return','num_trading_days',
+        'Betting Average',
+        'Gain Average',
+        'Loss Average',
+        'Risk Reward Ratio',
+        'Gain STD',
+        'Loss STD',
         ]
 
         stats = [self.name, self.num_trades,
                 self.cumulative_return.values[0], self.annual_return - 1, self.max_drawdown.values[0],
                 self.sharp_ratio.values[0], self.avg_return.values[0], self.std_return.values[0], 
-                trading_dates.days
+                trading_dates.days,
+                bet_avg,
+                gain_avg,
+                loss_avg,
+                gain_avg/-loss_avg,
+                gain_std,
+                loss_std
                 ]
 
         self.summary_result = pd.DataFrame([stats], columns=stats_names)
@@ -411,7 +454,7 @@ class BackTest(Portfolio):
         self.prymiding_count = 0
         self.start_date = sd
         self.end_date = ed
-        self.trade_records = pd.DataFrame(columns=['Buy Date','Sell Date','Ticker','Quant','Buy Price','Sell Price','Profit', 'Profit %'])
+        
 
     def __record_buy(self, ticker:str, date:dt.datetime, price:float, quantity:float):
         #put the buy order into the trade list
@@ -420,7 +463,7 @@ class BackTest(Portfolio):
     def __record_sell(self, ticker:str, date:dt.datetime, price:float, quantity:float):
         #put the sell order into the trade list,find the last buy order with empty sell date
         i = self.trade_records[self.trade_records['Ticker'] == ticker][self.trade_records['Sell Date'].isnull()].index
-        if i is None:
+        if i.empty:
             return
         self.trade_records.loc[i, 'Sell Date'] = date
         self.trade_records.loc[i, 'Sell Price'] = price
@@ -481,12 +524,17 @@ class BackTest(Portfolio):
                     if self.prymiding_count < self.prymiding:
                         self.prymiding_count = self.prymiding_count + 1
                         # today's stock = previous day stock + trade % * previous day cash / today price
-                        self.balance.loc[i[0], 'Stock'] = self.balance.loc[i[0] - 1, 'Stock'] + self.trade_size * self.balance.loc[i[0] - 1, 'Cash'] / j[1]['Price']
-                        # today's cash = previous day cash - trade % * previous day cash 
-                        self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0] - 1, 'Cash'] - self.trade_size * self.balance.loc[i[0] - 1, 'Cash']
-                        # today's balance = cash + stock value
-                        self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0], 'Cash'] + self.balance.loc[i[0], 'Stock'] * j[1]['Price']
-                        self.__record_buy(stock_data.ticker, i[1]['Date'], j[1]['Price'],  self.balance.loc[i[0], 'Stock'])
+                        if i[0] == 0:
+                            self.balance.loc[i[0], 'Stock'] = self.trade_size * self.balance.loc[i[0], 'Cash'] / j[1]['Price']
+                            self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0], 'Cash'] - self.balance.loc[i[0], 'Stock']*j[1]['Price']
+                            self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0], 'Cash'] + self.balance.loc[i[0], 'Stock'] * j[1]['Price']
+                        else:
+                            self.balance.loc[i[0], 'Stock'] = self.balance.loc[i[0] - 1, 'Stock'] + self.trade_size * self.balance.loc[i[0] - 1, 'Cash'] / j[1]['Price']
+                            # today's cash = previous day cash - trade % * previous day cash 
+                            self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0] - 1, 'Cash'] - self.trade_size * self.balance.loc[i[0] - 1, 'Cash']
+                            # today's balance = cash + stock value
+                            self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0], 'Cash'] + self.balance.loc[i[0], 'Stock'] * j[1]['Price']
+                            self.__record_buy(stock_data.ticker, i[1]['Date'], j[1]['Price'],  self.balance.loc[i[0], 'Stock'])
                     else:                        
                         #No action on this day, copy the previous day's row value except for Date
                         self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0]-1, 'Cash']
@@ -527,19 +575,7 @@ class BackTest(Portfolio):
 
     def performance_summary(self, v = True):
         super().performance_summary(start_date=self.start_date,end_date=self.end_date,verbose=v)
-        #trade_record analysis
-        #betting average
-        gain = len(self.trade_records.loc[self.trade_records['Profit %']> 0])
-        loss = len(self.trade_records.loc[self.trade_records['Profit %']<= 0])
-        bet_avg = gain/(gain+loss)
-        gain_avg = self.trade_records.loc[self.trade_records['Profit %'] > 0, 'Profit %'].mean()
-        loss_avg = self.trade_records.loc[self.trade_records['Profit %'] <= 0,'Profit %'].mean()
-        print('Betting Average  : {:.2%}'.format(bet_avg))
-        print('Gain Average     : {:.2%}'.format(gain_avg))
-        print('Loss Average     : {:.2%}'.format(loss_avg))
-        print('Risk Reward Ratio: {:.2f}'.format(gain_avg/-loss_avg))
-        print('Gain STD         : {:.2%}'.format(self.trade_records.loc[self.trade_records['Profit %'] > 0, 'Profit %'].std()))
-        print('Loss STD         : {:.2%}'.format(self.trade_records.loc[self.trade_records['Profit %'] <= 0, 'Profit %'].std()))
+
 
 
         
