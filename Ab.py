@@ -330,7 +330,63 @@ class CustomizedStrategy(Strategy):
                                          np.where(self.trades['Signal'] == -1.0, 'Sell', 'Hold'))
         #drop signal column Signal
         self.trades = self.trades.drop(columns=['Signal'])
+
+class ExternalThreshold(Strategy):
+    def __init__(self, signal_data:StockData, name:str='TH', buy_threshold:float=1.05, sell_threshold:float=0.95, signal_ma_window = 200, stop_loss:float=0, take_profit:float=0):
+        #stg_name = '{} {}/{} MA {}'.format(name,buy_threshold,sell_threshold,signal_ma_window)
+       # uper().__init__(stg_name, stop_loss, take_profit)
+        self.signal_data = signal_data
+        self.name = name
+        #self.indicator = indicator
+        self.buy_threshold = buy_threshold
+        self.sell_threshold = sell_threshold
+        self.signal_ma_window = signal_ma_window
+
+    def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
+        #clear the trades
+        self.trades = pd.DataFrame(columns=['Date','Ticker','Action', 'Price'])
+
+        self.stock_ticker = stock_data.ticker
+        self.signal_ticker = self.signal_data.ticker
+       
+        # make sure dates and rows are aligned in signal data and stock data
+        # it should only include dates that both signal data and stock data are available 
+        self.joined_data = stock_data.data[['Close']].rename(columns={'Close':'StockPrice'}).merge(
+                                             self.signal_data.data[['Close']].rename(columns = {'Close':'SignalPrice'}),
+                                             how = 'inner', left_index = True, right_index = True).sort_index()
+
+        # if there is input for sd and ed, then filter the data for the date range only 
+        if start_date:
+            self.joined_data = self.joined_data.loc[(self.joined_data.index >= start_date) & (self.joined_data.index <= end_date)].copy()
+        else:
+            pass
+
+        #Calculate the indicator (TODO: here the indicator comes from the signal data price, in the future can use other indicators passed to the function)
+       
+        # self.joined_data['Indicator'] = self.joined_data[self.indicator]
+        self.joined_data['SignalMA'] = self.joined_data['SignalPrice'].rolling(window=self.signal_ma_window).mean()
         
+        self.joined_data['price_to_MA'] = self.joined_data['SignalPrice'] / self.joined_data['SignalMA']
+        
+        self.joined_data['price_to_MA_long'] = self.joined_data.apply(lambda row: 1 if row['price_to_MA']>self.buy_threshold else 0, axis =1)
+        self.joined_data['price_to_MA_short'] = self.joined_data.apply(lambda row: 1 if row['price_to_MA']<self.sell_threshold else 0, axis =1)
+        
+        #Calculate the signal
+        self.joined_data['Signal'] = np.where((self.joined_data['price_to_MA_short'] ==1) , -1.0, 
+                                            np.where((self.joined_data['price_to_MA_long'] ==1), 1.0, 0.0) )
+
+        #Generate the trade list
+        #first copy the joined_data to trades , only keep the index, Signal, StockPrice
+        self.trades = self.joined_data[['Signal','StockPrice']].copy()
+        #drop signal = 0 rows
+        self.trades = self.trades[self.trades['Signal'] != 0]
+        self.trades['Action'] = np.where(self.trades['Signal'] == 1.0, 'Buy', 
+                                         np.where(self.trades['Signal'] == -1.0, 'Sell', 'Hold'))
+        #drop signal column Signal
+        self.trades = self.trades.drop(columns=['Signal'])
+        self.trades['Ticker'] = self.stock_ticker
+        self.trades = self.trades.rename(columns={'StockPrice':'Price'})
+
 
 class Portfolio(metaclass=ABCMeta):
     def __init__(self, principal, trade_size, prymiding, margin):
