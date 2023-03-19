@@ -4,6 +4,7 @@ import datetime as dt
 import numpy as np
 import sqlite3 as sql
 from abc import abstractmethod, ABCMeta
+import matplotlib.pyplot as plt
 
 class StockData(object):
     def __init__(self, ticker:str):
@@ -389,11 +390,13 @@ class ExternalThreshold(Strategy):
 
 
 class Portfolio(metaclass=ABCMeta):
-    def __init__(self, principal, trade_size, prymiding, margin):
+    def __init__(self, sd, ed, principal, trade_size, pyramiding, margin):
         self.principal = principal
-        self.prymiding = prymiding
+        self.pyramiding = pyramiding
         self.trade_size = trade_size
         self.margin = margin
+        self.start_date = sd
+        self.end_date = ed
         #Real account balance should be Cash+Stock-Margin = Total
         self.balance = pd.DataFrame(columns=['Date','Cash','Stock','Total','Margin'])
         self.name = None
@@ -404,7 +407,7 @@ class Portfolio(metaclass=ABCMeta):
         pass
     
     @abstractmethod
-    def performance_summary(self, start_date, end_date, verbose = True):
+    def performance_summary(self, verbose = True):
         portValue = self.balance[['Total']]
         
         # cumulative return
@@ -422,7 +425,7 @@ class Portfolio(metaclass=ABCMeta):
         self.avg_return = daily_return.mean()
         self.std_return = daily_return.std()
         self.sharp_ratio = self.avg_return/self.std_return
-        trading_dates = end_date - start_date
+        trading_dates = self.end_date - self.start_date
         # annual return
         if round((trading_dates.days/252)) == 0:
             self.annual_return = self.cumulative_return.values[0] + 1
@@ -505,11 +508,10 @@ Loss STD               : {:.2%}
 
 
 class BackTest(Portfolio):
-    def __init__(self, sd:dt.datetime, ed:dt.datetime, principal=1, trade_size=1 , prymiding=1):
-        super().__init__(principal, trade_size, prymiding, 0)
-        self.prymiding_count = 0
-        self.start_date = sd
-        self.end_date = ed
+    def __init__(self, sd:dt.datetime, ed:dt.datetime, principal=1, trade_size=1 , pyramiding=1):
+        super().__init__(sd, ed, principal, trade_size, pyramiding, 0)
+        self.pyramiding_count = 0
+
         
 
     def __record_buy(self, ticker:str, date:dt.datetime, price:float, quantity:float):
@@ -578,8 +580,8 @@ class BackTest(Portfolio):
                     self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0], 'Cash'] + self.balance.loc[i[0], 'Stock'] * stock_data.data.loc[i[1]['Date'], 'Close']
 
                 elif j[1]['Action'] == 'Buy':
-                    if self.prymiding_count < self.prymiding:
-                        self.prymiding_count = self.prymiding_count + 1
+                    if self.pyramiding_count < self.pyramiding:
+                        self.pyramiding_count = self.pyramiding_count + 1
                         # today's stock = previous day stock + trade % * previous day cash / today price
                         if i[0] == 0:
                             self.balance.loc[i[0], 'Stock'] = self.trade_size * self.balance.loc[i[0], 'Cash'] / stock_data.data.loc[i[1]['Date'], 'Close']
@@ -598,13 +600,13 @@ class BackTest(Portfolio):
                         self.balance.loc[i[0], 'Stock'] =  self.balance.loc[i[0]-1, 'Stock']
                         self.balance.loc[i[0], 'Total'] = stock_data.data.loc[i[1]['Date'], 'Close'] * self.balance.loc[i[0], 'Stock'] + self.balance.loc[i[0], 'Cash']
                 elif j[1]['Action'] == 'Sell':
-                    if self.prymiding_count > 0:
+                    if self.pyramiding_count > 0:
                         # today's cash = previous day cash + trade % * previous day stock * today price
                         self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0] - 1, 'Cash'] + self.trade_size * self.balance.loc[i[0]-1, 'Stock'] * stock_data.data.loc[i[1]['Date'], 'Close']
                         # today's stock = previous day stock - trade % * previous day stock
                         self.balance.loc[i[0], 'Stock'] = self.balance.loc[i[0] - 1, 'Stock'] - self.trade_size * self.balance.loc[i[0] - 1, 'Stock']
                         self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0], 'Cash'] + self.balance.loc[i[0], 'Stock'] * stock_data.data.loc[i[1]['Date'], 'Close']
-                        self.prymiding_count = self.prymiding_count - 1
+                        self.pyramiding_count = self.pyramiding_count - 1
                         self.__record_sell(stock_data.ticker, i[1]['Date'], stock_data.data.loc[i[1]['Date'], 'Close'],self.balance.loc[i[0] - 1, 'Stock'])
                         
                     else:
@@ -631,9 +633,15 @@ class BackTest(Portfolio):
             if self.balance.iloc[-1]['Stock'] > 0:
                 self.__record_sell(stock_data.ticker, self.end_date, stock_data.data.loc[self.end_date, 'Close'], self.balance.iloc[-1]['Stock'])
 
-    def performance_summary(self, v = True):
-        super().performance_summary(start_date=self.start_date,end_date=self.end_date,verbose=v)
+    def plot_records(self):
+        plt.bar(self.trade_records.index, self.trade_records['Profit %'], label = self.name)
+        plt.legend()
 
+    def plot_balance(self):
+        plt.plot(self.balance.index, self.balance['Total'], label = self.name)
+        plt.legend()
 
+    def performance_summary(self,v=True):
+        return super().performance_summary(verbose=v)
 
         
