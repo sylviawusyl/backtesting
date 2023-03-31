@@ -1,7 +1,13 @@
-import pandas as pd
+
 import yfinance as yf
-import datetime as dt   
-import numpy as np
+import datetime as dt
+try:
+    import cudf as pd
+    import cupy as np
+except:
+    import pandas as opd
+    import numpy as onp
+
 import sqlite3 as sql
 from abc import abstractmethod, ABCMeta
 import matplotlib.pyplot as plt
@@ -20,6 +26,7 @@ class StockData(object):
         self.data = yf.download(self.ticker, start=self.start_date, end=self.end_date)
         self.start_date = self.data.index[0]
         self.end_date = self.data.index[-1]
+        self.index = pd.to_datetime(self.data.index)
         #self.data.reset_index(inplace=True)
     
     def get_data_history_from_yfinance(self, ticker:str, period:str, interval:str,start_date, end_date):
@@ -75,8 +82,10 @@ class StockData(object):
     def get_data_from_csv(self, path:str):
         self.data = pd.read_csv(path)
         self.data['Date'] = pd.to_datetime(self.data['Date'])
-        self.data.set_index('Date', inplace=True)
-        #self.data.sort_values(by='Date', inplace=True)
+        self.data.set_index(['Date'],inplace=True)
+        self.data.sort_index(inplace=True)
+
+
     def get_data_from_db(self, db_path:str='data/stock_data.db', limit:int=100000):
         conn = sql.connect(db_path)
         print("SELECT * FROM stock_history Where Ticker='{}' limit {}".format(self.ticker,limit))
@@ -98,29 +107,39 @@ class Strategy(metaclass=ABCMeta):
     def __init__(self, name:str, stop_loss:float, take_profit:float):
         self.stop_loss = stop_loss
         self.take_profit = take_profit
-        self.trades = pd.DataFrame(columns=['Date','Ticker','Action', 'Price'])
+        self.trades = pd.DataFrame(columns=['Date','Action'])
         self.name = name
         #Action: Buy, Sell, StopLoss, TakeProfit, BuyAll, SellAll
     @abstractmethod
-    def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
+    def run_strategy(self, stock_data:[StockData], start_date:dt.datetime, end_date:dt.datetime):
         pass
 
-
+    def signal_convert(self, joined_data:pd.DataFrame, signal_column:str='Signal'):
+        self.trades = joined_data[['Signal']].copy()
+        #Drop signal = 0 rows
+        self.trades = self.trades[self.trades['Signal'] != 0]
+        self.trades['Action'] = 0
+        self.trades['Action'] = np.where(self.trades['Signal'] == 1.0, 1, self.trades['Action'])
+        self.trades['Action'] = np.where(self.trades['Signal'] == -1.0, -1, self.trades['Action'])
+        #Drop signal column Signal
+        self.trades = self.trades[['Action']]
     
+
 #Simple implementation of Buy and Hold strategy of above Strategy class
 class BuyAndHold(Strategy):
     def __init__(self, name:str='Buy and Hold', stop_loss:float=0, take_profit:float=0):
         super().__init__(name, stop_loss, take_profit)
-
+    
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
         #get the start and end date, if the start date is before the stock data start date, use the stock data start date
         # the min and max trade date between the entered start date and end date
-        self.trades = pd.DataFrame(columns=['Date','Ticker','Action', 'Price'])
+        self.trades = pd.DataFrame(columns=['Date','Action']).to_pandas()
+       
         sd = min( [ i  for i in stock_data.data.index if i >= start_date and i <= end_date])
         ed = max( [ i  for i in stock_data.data.index if i >= start_date and i <= end_date])
-
-        self.trades.loc[len(self.trades.index)] = [sd, stock_data.ticker, 'BuyAll', stock_data.data.loc[sd]['Close']]
-        self.trades.loc[len(self.trades.index)] = [ed, stock_data.ticker, 'SellAll', stock_data.data.loc[ed]['Close']]
+        self.trades.loc[len(self.trades.index)] = [sd,'BuyAll']
+        self.trades.loc[len(self.trades.index)] = [ed,'SellAll']
+        self.trades = pd.DataFrame(self.trades)
 
 class MACross(Strategy):
     def __init__(self,name:str='MA Cross', short_window:int=50, long_window:int=200, stop_loss:float=0, take_profit:float=0):
@@ -129,27 +148,26 @@ class MACross(Strategy):
         self.short_window = short_window
         self.long_window = long_window
         
-    def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
+    def run_strategy(self, indicator:[StockData], start_date:dt.datetime, end_date:dt.datetime):
         #clear the trades
-        self.trades = pd.DataFrame(columns=['Date','Ticker','Action', 'Price'])
+        self.trades = pd.DataFrame(columns=['Date','Action', 'Price'])
         self.trades.set_index('Date', inplace=True)
-        self.stock_ticker = stock_data.ticker
-        #check if the columns are present in the stock data
-        if 'MA{}'.format(self.short_window) not in stock_data.data.columns:
-            stock_data.get_indicators('Close',ma_windows=[self.short_window])
-        if 'MA{}'.format(self.long_window) not in stock_data.data.columns:
-            stock_data.get_indicators('Close',ma_windows=[self.long_window])
+        #check if the columns are present in the indicator
+        if 'MA{}'.format(self.short_window) not in indicator.data.columns:
+            indicator.get_indicators('Close',ma_windows=[self.short_window])
+        if 'MA{}'.format(self.long_window) not in indicator.data.columns:
+            indicator.get_indicators('Close',ma_windows=[self.long_window])
         # get the start and end date
         # if there is input for sd and ed, then filter the data for the date range only 
         if start_date:
-            self.joined_data = stock_data.data.loc[(stock_data.data.index >= start_date) 
-                                                   & (stock_data.data.index <= end_date)].copy()
+            self.joined_data = indicator.data.loc[(indicator.data.index >= start_date) 
+                                                   & (indicator.data.index <= end_date)].copy()
         else:
-            self.joined_data = stock_data.data.copy()
+            self.joined_data = indicator.data.copy()
         
         #Calculate the short and long moving average
-        self.joined_data['ShortMA'] = stock_data.data['MA{}'.format(self.short_window)]
-        self.joined_data['LongMA'] = stock_data.data['MA{}'.format(self.long_window)]
+        self.joined_data['ShortMA'] = indicator.data['MA{}'.format(self.short_window)]
+        self.joined_data['LongMA'] = indicator.data['MA{}'.format(self.long_window)]
 
         #Calculate the signal
         self.joined_data['Signal'] = 0.0
@@ -158,37 +176,28 @@ class MACross(Strategy):
         #Calculate the Sell signal
         self.joined_data['Signal'] = np.where(self.joined_data['ShortMA'] < self.joined_data['LongMA'], -1.0, self.joined_data['Signal'])
 
-        #copy signal and close columns with index to trades
-        self.trades = self.joined_data[['Signal', 'Close']].copy()
-        #drop signal = 0 rows
-        self.trades = self.trades[self.trades['Signal'] != 0]
-        self.trades['Action'] = np.where(self.trades['Signal'] == 1.0, 'Buy', 
-                                         np.where(self.trades['Signal'] == -1.0, 'Sell', 'Hold'))
-        #drop signal column Signal
-        self.trades = self.trades.drop(columns=['Signal'])
-        self.trades['Ticker'] = self.stock_ticker
-        self.trades = self.trades.rename(columns={'Close':'Price'})
+        super().signal_convert(self.joined_data)
 
 class MAThreshold(Strategy):
-    def __init__(self, name='MA TH', ma_window:int = 20, buy_threshold:float=15, sell_threshold:float=30, stop_loss:float=0, take_profit:float=0):
+    def __init__(self, name='MA TH', ma_window:int = 20, buy_threshold:float=1, sell_threshold:float=1, stop_loss:float=0, take_profit:float=0):
         stg_name = '{} {}/{} MA {}'.format(name,buy_threshold,sell_threshold,ma_window)
         super().__init__(stg_name, stop_loss, take_profit)
         self.ma_window = ma_window
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
 
-    def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
+    def run_strategy(self, indicator:StockData, start_date:dt.datetime, end_date:dt.datetime):
         self.trades = pd.DataFrame(columns=['Date','Ticker','Action', 'Price'])
-        self.stock_ticker = stock_data.ticker
+        self.stock_ticker = indicator.ticker
         ma_str = 'MA{}'.format(self.ma_window)
-        if ma_str not in stock_data.data.columns:
-            stock_data.get_indicators('Close',ma_windows=[self.ma_window])
+        if ma_str not in indicator.data.columns:
+            indicator.get_indicators('Close',ma_windows=[self.ma_window])
 
         if start_date:
-            self.joined_data = stock_data.data.loc[(stock_data.data.index >= start_date) 
-                                                   & (stock_data.data.index <= end_date)].copy()
+            self.joined_data = indicator.data.loc[(indicator.data.index >= start_date) 
+                                                   & (indicator.data.index <= end_date)].copy()
         else:
-            self.joined_data = stock_data.data.copy()
+            self.joined_data = indicator.data.copy()
             
         self.joined_data['price_to_MA'] = self.joined_data['Close'] / self.joined_data[ma_str]
 
@@ -196,13 +205,7 @@ class MAThreshold(Strategy):
         self.joined_data['Signal'] = np.where((self.joined_data['price_to_MA'] < self.sell_threshold) , -1.0, 
                                             np.where((self.joined_data['price_to_MA'] > self.buy_threshold), 1.0, 0.0)
                                             )
-                                            
-        #Generate the trade list
-        for row in self.joined_data.iterrows():
-            if row[1]['Signal'] == 1:
-                self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Buy', row[1]['Close']]
-            elif row[1]['Signal'] == -1:
-                self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Sell', row[1]['Close']]      
+        super().signal_convert(self.joined_data)
 
 class WeeklyMAThreshold(Strategy):
     def __init__(self, name:str='W MA TH', ma_window:int=20,  buy_threshold:float=15, sell_threshold:float=30,stop_loss:float=0, take_profit:float=0):
@@ -240,66 +243,40 @@ class WeeklyMAThreshold(Strategy):
                                             np.where((self.joined_data['MA_price_to_MA_long'] ==1), 1.0, 0.0) )
                                             
         #Generate the trade list
-        for row in self.joined_data.iterrows():
-            if row[1]['Signal'] == 1:
-                self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Buy', row[1]['Close']]
-            elif row[1]['Signal'] == -1:
-                self.trades.loc[len(self.trades.index)] = [row[0], self.stock_ticker, 'Sell', row[1]['Close']] 
+        super().signal_convert(self.joined_data) 
                 
                 
 class Threshold(Strategy):
-    def __init__(self, signal_data:StockData,indicator, name:str='TH', buy_threshold:float=15, sell_threshold:float=30, signal_ma_window = 20, stop_loss:float=0, take_profit:float=0):
+    def __init__(self, name:str='TH', buy_threshold:float=15, sell_threshold:float=30, signal_ma_window = 20, stop_loss:float=0, take_profit:float=0):
         stg_name = '{} {}/{} MA {}'.format(name,buy_threshold,sell_threshold,signal_ma_window)
         super().__init__(stg_name, stop_loss, take_profit)
-        self.signal_data = signal_data
-        self.indicator = indicator
+        
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
         self.signal_ma_window = signal_ma_window
 
-    def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
+    def run_strategy(self, indicator:StockData, start_date:dt.datetime, end_date:dt.datetime):
         #clear the trades
-        self.trades = pd.DataFrame(columns=['Date','Ticker','Action', 'Price'])
-
-        self.stock_ticker = stock_data.ticker
-        self.signal_ticker = self.signal_data.ticker
-       
-        # make sure dates and rows are aligned in signal data and stock data
+        self.trades = pd.DataFrame(columns=['Date','Action'])
+        self.joined_data = indicator.data.copy()
         # it should only include dates that both signal data and stock data are available 
-        self.joined_data = stock_data.data[['Close']].rename(columns={'Close':'StockPrice'}).merge(
-                                             self.signal_data.data[['Close']].rename(columns = {'Close':'SignalPrice'}),
-                                             how = 'inner', left_index = True, right_index = True).sort_index()
-
-        # if there is input for sd and ed, then filter the data for the date range only 
-        if start_date:
-            self.joined_data = self.joined_data.loc[(self.joined_data.index >= start_date) & (self.joined_data.index <= end_date)].copy()
-        else:
-            pass
-
-        #Calculate the indicator (TODO: here the indicator comes from the signal data price, in the future can use other indicators passed to the function)
-       
-        # self.joined_data['Indicator'] = self.joined_data[self.indicator]
-        self.joined_data['SignalMA'] = self.joined_data['SignalPrice'].rolling(window=self.signal_ma_window).mean()
+        self.joined_data = self.joined_data.loc[start_date:end_date]
+        ma_str = 'MA{}'.format(self.signal_ma_window)
+        self.joined_data[ma_str] = 0
+        self.joined_data[ma_str] = self.joined_data['Close'].rolling(window=self.signal_ma_window).mean()
+        #fix the NA value in the MA column, cupy is not happy with NA value
+        self.joined_data[ma_str].fillna(method='bfill',inplace=True)
 
         #Calculate the signal
         # sell signal: price < 30 (sell threshold), and in a downward trend. use sma20>price as a proxy of downward trend
         # buy signal: price > 15 (buy threshold), and in an upward trend. use sma20<price as a proxy of upward trend
         # otherwise, when buy threshold < sell threshold, it won't work (sell rule will always dominates, eg, when price < 30, all sell)
-        # (TODO) is there a better way to define the signal or a better proxy of downward/upward trend ?
-        self.joined_data['Signal'] = np.where((self.joined_data['SignalPrice'] < self.sell_threshold) & (self.joined_data['SignalMA']>self.joined_data['SignalPrice']), -1.0, 
-                                            np.where((self.joined_data['SignalPrice'] > self.buy_threshold)  & (self.joined_data['SignalMA']<self.joined_data['SignalPrice']), 1.0, 0.0)
-                                            )
-        #Generate the trade list
-        #first copy the joined_data to trades , only keep the index, Signal, StockPrice
-        self.trades = self.joined_data[['Signal','StockPrice']].copy()
-        #drop signal = 0 rows
-        self.trades = self.trades[self.trades['Signal'] != 0]
-        self.trades['Action'] = np.where(self.trades['Signal'] == 1.0, 'Buy', 
-                                         np.where(self.trades['Signal'] == -1.0, 'Sell', 'Hold'))
-        #drop signal column Signal
-        self.trades = self.trades.drop(columns=['Signal'])
-        self.trades['Ticker'] = self.stock_ticker
-        self.trades = self.trades.rename(columns={'StockPrice':'Price'})
+
+        self.joined_data['Signal'] = 0
+        self.joined_data['Signal'] = np.where((self.joined_data['Close'] > self.buy_threshold)  & (self.joined_data[ma_str]<self.joined_data['Close']), 1.0, 0.0)
+        self.joined_data['Signal'] = np.where((self.joined_data['Close'] < self.sell_threshold) & (self.joined_data[ma_str]>self.joined_data['Close']), -1.0,self.joined_data['Signal'])
+        
+        super().signal_convert(self.joined_data)
 
 class CustomizedStrategy(Strategy):
     def __init__(self, signals_df, name:str='Customized',stop_loss:float=0, take_profit:float=0):
@@ -307,8 +284,6 @@ class CustomizedStrategy(Strategy):
         self.signals_df = signals_df
 
     def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
-        self.stock_ticker = stock_data.ticker
-       
         # make sure dates and rows are aligned in signal data and stock data
         # it should only include dates that both signal data and stock data are available 
         self.joined_data = stock_data.data[['Close']].rename(columns={'Close':'Price'}).merge(
@@ -321,73 +296,7 @@ class CustomizedStrategy(Strategy):
         else:
             pass
 
-        # The signals are already from signals_df: self.joined_data['Signal']
-
-        #Generate the trade list
-        #first copy the joined_data to trades , only keep the index, Signal, Price & drop signal = 0 rows
-        self.trades = self.joined_data.loc[self.joined_data.Signal!=0, ['Signal','Price']].copy()
-        self.trades['Ticker'] = self.stock_ticker
-        self.trades['Action'] = np.where(self.trades['Signal'] == 1.0, 'Buy', 
-                                         np.where(self.trades['Signal'] == -1.0, 'Sell', 'Hold'))
-        #drop signal column Signal
-        self.trades = self.trades.drop(columns=['Signal'])
-
-class ExternalThreshold(Strategy):
-    def __init__(self, signal_data:StockData, name:str='TH', buy_threshold:float=1.05, sell_threshold:float=0.95, signal_ma_window = 200, stop_loss:float=0, take_profit:float=0):
-        #stg_name = '{} {}/{} MA {}'.format(name,buy_threshold,sell_threshold,signal_ma_window)
-       # uper().__init__(stg_name, stop_loss, take_profit)
-        self.signal_data = signal_data
-        self.name = name
-        #self.indicator = indicator
-        self.buy_threshold = buy_threshold
-        self.sell_threshold = sell_threshold
-        self.signal_ma_window = signal_ma_window
-
-    def run_strategy(self, stock_data:StockData, start_date:dt.datetime, end_date:dt.datetime):
-        #clear the trades
-        self.trades = pd.DataFrame(columns=['Date','Ticker','Action', 'Price'])
-
-        self.stock_ticker = stock_data.ticker
-        self.signal_ticker = self.signal_data.ticker
-       
-        # make sure dates and rows are aligned in signal data and stock data
-        # it should only include dates that both signal data and stock data are available 
-        self.joined_data = stock_data.data[['Close']].rename(columns={'Close':'StockPrice'}).merge(
-                                             self.signal_data.data[['Close']].rename(columns = {'Close':'SignalPrice'}),
-                                             how = 'inner', left_index = True, right_index = True).sort_index()
-
-        # if there is input for sd and ed, then filter the data for the date range only 
-        if start_date:
-            self.joined_data = self.joined_data.loc[(self.joined_data.index >= start_date) & (self.joined_data.index <= end_date)].copy()
-        else:
-            pass
-
-        #Calculate the indicator (TODO: here the indicator comes from the signal data price, in the future can use other indicators passed to the function)
-       
-        # self.joined_data['Indicator'] = self.joined_data[self.indicator]
-        self.joined_data['SignalMA'] = self.joined_data['SignalPrice'].rolling(window=self.signal_ma_window).mean()
-        
-        self.joined_data['price_to_MA'] = self.joined_data['SignalPrice'] / self.joined_data['SignalMA']
-        
-        self.joined_data['price_to_MA_long'] = self.joined_data.apply(lambda row: 1 if row['price_to_MA']>self.buy_threshold else 0, axis =1)
-        self.joined_data['price_to_MA_short'] = self.joined_data.apply(lambda row: 1 if row['price_to_MA']<self.sell_threshold else 0, axis =1)
-        
-        #Calculate the signal
-        self.joined_data['Signal'] = np.where((self.joined_data['price_to_MA_short'] ==1) , -1.0, 
-                                            np.where((self.joined_data['price_to_MA_long'] ==1), 1.0, 0.0) )
-
-        #Generate the trade list
-        #first copy the joined_data to trades , only keep the index, Signal, StockPrice
-        self.trades = self.joined_data[['Signal','StockPrice']].copy()
-        #drop signal = 0 rows
-        self.trades = self.trades[self.trades['Signal'] != 0]
-        self.trades['Action'] = np.where(self.trades['Signal'] == 1.0, 'Buy', 
-                                         np.where(self.trades['Signal'] == -1.0, 'Sell', 'Hold'))
-        #drop signal column Signal
-        self.trades = self.trades.drop(columns=['Signal'])
-        self.trades['Ticker'] = self.stock_ticker
-        self.trades = self.trades.rename(columns={'StockPrice':'Price'})
-
+        super().signal_convert(self.joined_data)
 
 class Portfolio(metaclass=ABCMeta):
     def __init__(self, sd, ed, principal, trade_size, pyramiding, margin):
@@ -398,9 +307,9 @@ class Portfolio(metaclass=ABCMeta):
         self.start_date = sd
         self.end_date = ed
         #Real account balance should be Cash+Stock-Margin = Total
-        self.balance = pd.DataFrame(columns=['Date','Cash','Stock','Total','Margin'])
+        self.balance = pd.DataFrame(columns=['Date','Cash','Stock','Total','Margin']).to_pandas()
         self.name = None
-        self.trade_records = pd.DataFrame(columns=['Buy Date','Sell Date','Ticker','Quant','Buy Price','Sell Price','Profit', 'Profit %'])
+        self.trade_records = pd.DataFrame(columns=['Buy Date','Sell Date','Ticker','Quant','Buy Price','Sell Price','Profit', 'Profit %']).to_pandas()
         
     @abstractmethod
     def run_backtest(self, strategy:Strategy, stock_data:StockData):
@@ -503,7 +412,7 @@ Loss STD               : {:.2%}
                 loss_std
                 ]
 
-        self.summary_result = pd.DataFrame([stats], columns=stats_names)
+        self.summary_result = pd.DataFrame([stats], columns=stats_names).to_pandas()
         
 
 
@@ -514,11 +423,11 @@ class BackTest(Portfolio):
 
         
 
-    def __record_buy(self, ticker:str, date:dt.datetime, price:float, quantity:float):
+    def __record_buy(self, ticker:str, date, price:float, quantity:float):
         #put the buy order into the trade list
         self.trade_records.loc[len(self.trade_records)] = [date, np.nan, ticker, quantity, price, np.nan, np.nan, np.nan]
 
-    def __record_sell(self, ticker:str, date:dt.datetime, price:float, quantity:float):
+    def __record_sell(self, ticker:str, date, price:float, quantity:float):
         #put the sell order into the trade list,find the last buy order with empty sell date
         i = self.trade_records[self.trade_records['Ticker'] == ticker][self.trade_records['Sell Date'].isnull()].index
         if i.empty:
@@ -542,11 +451,11 @@ class BackTest(Portfolio):
         self.balance.loc[0, 'Cash'] = self.principal
         self.balance.loc[0, 'Stock'] = 0                
         self.balance.loc[0, 'Total'] = self.principal
-        
         #reset strategy index
-        strategy.trades = strategy.trades.reset_index(drop=False)
+        self.trades = strategy.trades.to_pandas()
+        self.trades = self.trades.reset_index(drop=False)
         x = self.balance.iterrows()
-        y = strategy.trades.iterrows()
+        y = self.trades.iterrows()
         i = next(x, None)
         j = next(y, None)
         if j is None:
@@ -560,7 +469,7 @@ class BackTest(Portfolio):
                 self.balance.loc[i[0], 'Stock'] =  self.balance.loc[i[0]-1, 'Stock']
                 self.balance.loc[i[0], 'Total'] = stock_data.data.loc[i[1]['Date'], 'Close'] * self.balance.loc[i[0], 'Stock'] + self.balance.loc[i[0], 'Cash']
             elif i[1]['Date'] == j[1]['Date']:
-                if (weekly_buy and i[1]['Date'].weekday() != 4 and j[1]['Action'] == 'Buy') or (weekly_sell and i[1]['Date'].weekday() != 4 and j[1]['Action'] == 'Sell'):
+                if (weekly_buy and i[1]['Date'].weekday() != 4 and j[1]['Action'] == 1) or (weekly_sell and i[1]['Date'].weekday() != 4 and j[1]['Action'] == -1):
                     if i[0] != 0:  
                         #No action on this day, copy the previous day's row value except for Date
                         self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0]-1, 'Cash']
@@ -579,7 +488,7 @@ class BackTest(Portfolio):
                     self.balance.loc[i[0], 'Stock'] = 0
                     self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0], 'Cash'] + self.balance.loc[i[0], 'Stock'] * stock_data.data.loc[i[1]['Date'], 'Close']
 
-                elif j[1]['Action'] == 'Buy':
+                elif j[1]['Action'] == 1:
                     if self.pyramiding_count < self.pyramiding:
                         self.pyramiding_count = self.pyramiding_count + 1
                         # today's stock = previous day stock + trade % * previous day cash / today price
@@ -599,7 +508,7 @@ class BackTest(Portfolio):
                         self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0]-1, 'Cash']
                         self.balance.loc[i[0], 'Stock'] =  self.balance.loc[i[0]-1, 'Stock']
                         self.balance.loc[i[0], 'Total'] = stock_data.data.loc[i[1]['Date'], 'Close'] * self.balance.loc[i[0], 'Stock'] + self.balance.loc[i[0], 'Cash']
-                elif j[1]['Action'] == 'Sell':
+                elif j[1]['Action'] == -1:
                     if self.pyramiding_count > 0:
                         # today's cash = previous day cash + trade % * previous day stock * today price
                         self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0] - 1, 'Cash'] + self.trade_size * self.balance.loc[i[0]-1, 'Stock'] * stock_data.data.loc[i[1]['Date'], 'Close']
@@ -630,15 +539,17 @@ class BackTest(Portfolio):
                     self.balance.loc[i[0], 'Total'] = stock_data.data.loc[i[1]['Date'], 'Close'] * self.balance.loc[i[0], 'Stock'] + self.balance.loc[i[0], 'Cash']
             i = next(x, None)
 
-            if self.balance.iloc[-1]['Stock'] > 0:
-                self.__record_sell(stock_data.ticker, self.end_date, stock_data.data.loc[self.end_date, 'Close'], self.balance.iloc[-1]['Stock'])
+        if self.balance.iloc[-1]['Stock'] > 0:
+            self.__record_sell(stock_data.ticker, self.balance.iloc[-1]['Date'], stock_data.data.loc[self.balance.iloc[-1]['Date'], 'Close'], self.balance.iloc[-1]['Stock'])
 
     def plot_records(self):
+        plt.figure(figsize=(16,4))
         plt.bar(self.trade_records.index, self.trade_records['Profit %'], label = self.name)
         plt.legend()
 
     def plot_balance(self):
-        plt.plot(self.balance.index, self.balance['Total'], label = self.name)
+        plt.figure(figsize=(16,4))
+        plt.plot(self.balance['Date'], self.balance['Total'], label = self.name)
         plt.legend()
 
     def performance_summary(self,v=True):
