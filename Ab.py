@@ -114,7 +114,15 @@ class StockData(object):
         for above_threshold in above_thresholds:
             self.data['above{}'.format(above_threshold)] = np.where(
                 self.data[column] > above_threshold, 1, 0)
-
+    def get_sma(self, column='Close', sma_window=21):
+        self.data['{}-SMA{}'.format(column, sma_window)] = self.data[column].rolling(
+            window=sma_window, min_periods=1).mean()
+    def get_ema(self, column='Close', ema_window=21):
+        self.data['{}-EMA{}'.format(column, ema_window)] = self.data[column].ewm(
+            span=ema_window, adjust=False).mean()
+    def get_k(self, column='Close', k_window=14):
+        #K(fast line) = Close - 14Days low / 14Days high - 14Days low * 100
+        self.data['{}-K{}'.format(column, k_window)] = (self.data[column] - self.data[column].rolling(window=k_window, min_periods=1).min()) / (self.data[column].rolling(window=k_window, min_periods=1).max() - self.data[column].rolling(window=k_window, min_periods=1).min()) * 100
 
 class Strategy(metaclass=ABCMeta):
     def __init__(self, name: str, stop_loss: float, take_profit: float):
@@ -261,6 +269,34 @@ class Threshold(Strategy):
         # only keep the Date and Signal columns
         self.trades = self.joined_data[['Signal']]
         # reset the index
+        self.trades.reset_index(inplace=True)
+
+# Stochastic Oscillator Strategy
+# Buy when %K is below 20 and %D is below 20
+# Sell when %K is above 80 and %D is above 80
+# https://www.investopedia.com/terms/s/stochasticoscillator.asp
+#https://school.stockcharts.com/doku.php?id=technical_indicators:stochastic_oscillator_fast_slow_and_full
+class StochasticOscillator(Strategy):
+    def __init__(self, name: str = 'SO', stop_loss: float = 0, take_profit: float = 0):
+        super().__init__(name, stop_loss, take_profit)
+
+    def run_strategy(self, indicator: StockData, start_date: dt.datetime, end_date: dt.datetime):
+        self.trades = pd.DataFrame(columns=['Date', 'Ticker', 'Signal'])
+
+        if start_date:
+            self.joined_data = indicator.data.loc[(indicator.data.index >= start_date)
+                                                  & (indicator.data.index <= end_date)].copy()
+        else:
+            self.joined_data = indicator.data.copy()
+        #get k14 as fast line
+        indicator.get_k('Close', 14)
+        #get ema 5 of k14 as slow line
+        indicator.get_ema('K14',5)
+        # Calculate the signal
+        self.joined_data['Signal'] = np.where((self.joined_data['K14'] < 20) & (self.joined_data['EMA5'] < 20), 1.0, 0.0)
+        self.joined_data['Signal'] = np.where((self.joined_data['K14'] > 80) & (self.joined_data['EMA5'] > 80), -1.0, self.joined_data['Signal'])
+
+        self.trades = self.joined_data[['Signal']]
         self.trades.reset_index(inplace=True)
 
 
