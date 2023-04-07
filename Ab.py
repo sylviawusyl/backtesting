@@ -272,29 +272,83 @@ class Threshold(Strategy):
         self.trades.reset_index(inplace=True)
 
 # Stochastic Oscillator Strategy
-# Buy when %K is below 20 and %D is below 20
-# Sell when %K is above 80 and %D is above 80
 # https://www.investopedia.com/terms/s/stochasticoscillator.asp
 #https://school.stockcharts.com/doku.php?id=technical_indicators:stochastic_oscillator_fast_slow_and_full
-class StochasticOscillator(Strategy):
-    def __init__(self, name: str = 'SO', stop_loss: float = 0, take_profit: float = 0):
+
+#Buy Rule:
+#Need to meet all the following conditions:
+#Daily %K above %D 
+#Weekly %K Going Up or Flat
+#Daily %K above 20
+
+#Sell Rule:
+#Need to meet all the following conditions:
+#Weekly %K under %D
+#Weekly %K under 80
+
+#Stop Loss Rule:
+#TQQQ drop 10% or more in a day
+class StochasticCross(Strategy):
+    def __init__(self, name: str = 'SO', k_window=14, full_k_window=5, full_d_window=5, overbought=80, oversold=10, stop_loss: float = 0, take_profit: float = 0):
         super().__init__(name, stop_loss, take_profit)
+        self.k_window = k_window
+        self.full_k_window = full_k_window
+        self.full_d_window = full_d_window
+        self.oversold = oversold
+        self.overbought = overbought
 
-    def run_strategy(self, indicator: StockData, start_date: dt.datetime, end_date: dt.datetime):
+    def run_strategy(self, indicator: [StockData], start_date: dt.datetime, end_date: dt.datetime):
         self.trades = pd.DataFrame(columns=['Date', 'Ticker', 'Signal'])
+        daily_data = indicator[0]
+        weekly_data = indicator[1]
+        
+        Fast_K_str = 'Close-K{}'.format(self.k_window)
+        Fast_D_str = 'Close-K{}-EMA{}'.format(self.k_window, self.full_k_window)
+        Full_K_str = Fast_D_str
+        Full_D_str = '{}-EMA{}'.format(Full_K_str, self.full_d_window)
+        #Daily Stochastic Oscillator:
 
-        if start_date:
-            self.joined_data = indicator.data.loc[(indicator.data.index >= start_date)
-                                                  & (indicator.data.index <= end_date)].copy()
-        else:
-            self.joined_data = indicator.data.copy()
-        #get k14 as fast line
-        indicator.get_k('Close', 14)
-        #get ema 5 of k14 as slow line
-        indicator.get_ema('K14',5)
-        # Calculate the signal
-        self.joined_data['Signal'] = np.where((self.joined_data['K14'] < 20) & (self.joined_data['EMA5'] < 20), 1.0, 0.0)
-        self.joined_data['Signal'] = np.where((self.joined_data['K14'] > 80) & (self.joined_data['EMA5'] > 80), -1.0, self.joined_data['Signal'])
+        #Fast Stochastic Oscillator:
+        #Fast %K = %K basic calculation
+        #Fast %D = 5-period SMA of Fast %K
+        daily_data.get_k('Close', self.k_window)
+        daily_data.get_ema(Fast_K_str, self.full_k_window)
+
+        #Full Stochastic Oscillator:
+        #Full %K = Fast %D
+        #Full %D = 5-period EMA of Full %K
+        daily_data.get_ema(Full_K_str, self.full_d_window)
+        daily_data.data['DClose'] = daily_data.data['Close']
+        daily_data.data.rename(columns={Full_K_str: 'D%K', Full_D_str: 'D%D'}, inplace=True)
+
+        #Weekly Stochastic Oscillator:
+        weekly_data.get_k('Close', self.k_window)
+        weekly_data.get_ema(Fast_K_str, self.full_k_window)
+        weekly_data.get_ema(Full_K_str, self.full_d_window)
+        weekly_data.data['WClose'] = weekly_data.data['Close']
+        weekly_data.data.rename(columns={Full_K_str: 'W%K', Full_D_str: 'W%D'}, inplace=True)
+
+        #join daily and weekly data together into one dataframe joined_data, keep DClose, D%K, D%D, WClose, W%K, W%D
+        #keep all daily data, patch weekly data that has a corresponding daily data
+        self.joined_data = daily_data.data[['DClose','D%K','D%D']].merge(weekly_data.data[['WClose','W%K','W%D']], how='left', left_index=True, right_index=True)
+        print(self.joined_data)
+
+        #fill in the NA value in W%K, W%D with the next available value
+        self.joined_data['W%K'] = self.joined_data['W%K'].fillna(method='bfill')
+        self.joined_data['W%D'] = self.joined_data['W%D'].fillna(method='bfill')
+        self.joined_data['WClose'] = self.joined_data['WClose'].fillna(method='bfill')
+        
+        #determin if Weekly %K Going Up or Flat, into a new column W%K-UP
+        self.joined_data['W%K-UP'] = np.where(self.joined_data['W%K'] >= self.joined_data['W%K'].shift(1), 1.0, 0.0)
+
+        #buy rule: Daily %K above %D, Weekly %K Going Up, Daily %K above oversold
+        self.joined_data['Signal'] = np.where((self.joined_data['D%K'] > self.joined_data['D%D']) & (self.joined_data['W%K-UP'] == 1.0) & (self.joined_data['D%K'] > self.oversold), 1.0, 0.0)
+
+        #sell rule: Weekly %K under %D, Weekly %K under 80
+        self.joined_data['Signal'] = np.where((self.joined_data['W%K'] < self.joined_data['W%D']) & (self.joined_data['W%K'] < self.overbought), -1.0, self.joined_data['Signal'])
+
+        #stop loss rule: TQQQ drop 10% or more in a day
+        self.joined_data['Signal'] = np.where((self.joined_data['DClose'] < self.joined_data['DClose'].shift(1) * 0.9), -1.0, self.joined_data['Signal'])
 
         self.trades = self.joined_data[['Signal']]
         self.trades.reset_index(inplace=True)
