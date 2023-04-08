@@ -1,6 +1,9 @@
-
+#install yfinance
+#pip install yfinance --upgrade --no-cache-dir
 import yfinance as yf
 import datetime as dt
+import pytz
+
 
 import numpy as np
 import pandas as pd
@@ -25,16 +28,15 @@ class StockData(object):
         self.start_date = None
         self.end_date = None
 
-    def get_data_from_yfinance(self, ticker: str, start_date: dt.datetime, end_date: dt.datetime):
+    def get_data_from_yfinance(self, ticker: str, start_date: dt.datetime, end_date: dt.datetime, interval: str = '1d'):
         self.ticker = ticker
         self.start_date = start_date
         self.end_date = end_date
-        self.data = yf.download(
-            self.ticker, start=self.start_date, end=self.end_date)
+        self.data = yf.download(self.ticker, start=self.start_date, end=self.end_date, interval=interval)
         self.start_date = self.data.index[0]
         self.end_date = self.data.index[-1]
+        self.data['Weekday'] = self.data.index.weekday
         self.index = pd.to_datetime(self.data.index)
-        # self.data.reset_index(inplace=True)
 
     def get_data_history_from_yfinance(self, ticker: str, period: str, interval: str, start_date, end_date):
         """
@@ -82,9 +84,12 @@ class StockData(object):
         self.start_date = start_date
         self.end_date = end_date
         self.data = yf.Ticker(self.ticker).history(period=self.period, interval=self.interval, start=self.start_date, end=self.end_date,
-                                                   prepost=False, actions=True, auto_adjust=True, back_adjust=False, proxy=None, rounding=False, timeout=None)  # .reset_index()
-        self.data.index = self.data.index.strftime('%Y-%m-%d')
+                                                   prepost=False, actions=True, auto_adjust=True, back_adjust=False, proxy=None, rounding=False, timeout=None) 
+        if interval == '1wk':
+            self.data.index = self.data.index - dt.timedelta(days=3)
+        self.data['Weekday'] = self.data.index.weekday
         self.data.index = pd.to_datetime(self.data.index)
+        
 
     def get_data_from_csv(self, path: str):
         self.data = pd.read_csv(path)
@@ -129,11 +134,12 @@ class Strategy(metaclass=ABCMeta):
         self.stop_loss = stop_loss
         self.take_profit = take_profit
         self.trades = pd.DataFrame(columns=['Date', 'Signal'])
+        self.trades.set_index(['Date'], inplace=True)
         self.name = name
         # Action: Buy, Sell, StopLoss, TakeProfit, BuyAll, SellAll
 
     @abstractmethod
-    def run_strategy(self, indicators: [StockData], start_date: dt.datetime, end_date: dt.datetime):
+    def run_strategy(self, indicators, start_date: dt.datetime, end_date: dt.datetime , verbose: bool = False):
         pass
 
 # Simple implementation of Buy and Hold strategy of above Strategy class, run in pandas
@@ -143,11 +149,11 @@ class BuyAndHold(Strategy):
     def __init__(self, name: str = 'Buy and Hold', stop_loss: float = 0, take_profit: float = 0):
         super().__init__(name, stop_loss, take_profit)
 
-    def run_strategy(self, indicator: StockData, start_date: dt.datetime, end_date: dt.datetime):
+    def run_strategy(self, indicator, start_date: dt.datetime, end_date: dt.datetime):
         # get the start and end date, if the start date is before the stock data start date, use the stock data start date
         # the min and max trade date between the entered start date and end date
-        sd = max(start_date, indicator.data.index.min())
-        ed = min(end_date, indicator.data.index.max())
+        sd = max(start_date, indicator.data.index[0])
+        ed = min(end_date, indicator.data.index[-1])
 
         # check if sd is in indicator index
         if sd not in indicator.data.index:
@@ -155,6 +161,7 @@ class BuyAndHold(Strategy):
                 sd, method='backfill')]
 
         self.trades = pd.DataFrame({'Date': [sd, ed], 'Signal': [1, -1]})
+        self.trades.set_index(['Date'], inplace=True)
 
 
 class MACross(Strategy):
@@ -164,7 +171,7 @@ class MACross(Strategy):
         self.short_window = short_window
         self.long_window = long_window
 
-    def run_strategy(self, indicator: [StockData], start_date: dt.datetime, end_date: dt.datetime):
+    def run_strategy(self, indicator, start_date: dt.datetime, end_date: dt.datetime):
         # clear the trades
         self.trades = pd.DataFrame(columns=['Date', 'Signal'])
         self.trades.set_index('Date', inplace=True)
@@ -197,7 +204,6 @@ class MACross(Strategy):
             self.joined_data['ShortMA'] < self.joined_data['LongMA'], -1.0, self.joined_data['Signal'])
 
         self.trades = self.joined_data[['Signal']]
-        self.trades.reset_index(inplace=True)
 
 
 class MAThreshold(Strategy):
@@ -209,8 +215,9 @@ class MAThreshold(Strategy):
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
 
-    def run_strategy(self, indicator: StockData, start_date: dt.datetime, end_date: dt.datetime):
+    def run_strategy(self, indicator, start_date: dt.datetime, end_date: dt.datetime):
         self.trades = pd.DataFrame(columns=['Date', 'Ticker', 'Signal'])
+        self.trades.set_index(['Date'], inplace=True)
         self.stock_ticker = indicator.ticker
         ma_str = 'MA{}'.format(self.ma_window)
         if ma_str not in indicator.data.columns:
@@ -231,7 +238,6 @@ class MAThreshold(Strategy):
                                                   (self.joined_data['price_to_MA'] > self.buy_threshold), 1.0, 0.0)
                                               )
         self.trades = self.joined_data[['Signal']]
-        self.trades.reset_index(inplace=True)
 
 
 class Threshold(Strategy):
@@ -244,9 +250,10 @@ class Threshold(Strategy):
         self.sell_threshold = sell_threshold
         self.signal_ma_window = signal_ma_window
 
-    def run_strategy(self, indicator: StockData, start_date: dt.datetime, end_date: dt.datetime):
+    def run_strategy(self, indicator, start_date: dt.datetime, end_date: dt.datetime):
         # clear the trades
         self.trades = pd.DataFrame(columns=['Date', 'Signal'])
+        self.trades.set_index('Date', inplace=True)
         self.joined_data = indicator.data.copy()
         # it should only include dates that both signal data and stock data are available
         self.joined_data = self.joined_data.loc[start_date:end_date]
@@ -268,8 +275,6 @@ class Threshold(Strategy):
             self.joined_data[ma_str] > self.joined_data['Close']), -1.0, self.joined_data['Signal'])
         # only keep the Date and Signal columns
         self.trades = self.joined_data[['Signal']]
-        # reset the index
-        self.trades.reset_index(inplace=True)
 
 # Stochastic Oscillator Strategy
 # https://www.investopedia.com/terms/s/stochasticoscillator.asp
@@ -289,7 +294,7 @@ class Threshold(Strategy):
 #Stop Loss Rule:
 #TQQQ drop 10% or more in a day
 class StochasticCross(Strategy):
-    def __init__(self, name: str = 'SO', k_window=14, full_k_window=5, full_d_window=5, overbought=80, oversold=10, stop_loss: float = 0, take_profit: float = 0):
+    def __init__(self, name: str = 'Stochastic', k_window=14, full_k_window=5, full_d_window=5, overbought=80, oversold=10, stop_loss: float = 0, take_profit: float = 0):
         super().__init__(name, stop_loss, take_profit)
         self.k_window = k_window
         self.full_k_window = full_k_window
@@ -297,10 +302,11 @@ class StochasticCross(Strategy):
         self.oversold = oversold
         self.overbought = overbought
 
-    def run_strategy(self, indicator: [StockData], start_date: dt.datetime, end_date: dt.datetime):
+    def run_strategy(self, indicators, sd: dt.datetime, ed: dt.datetime):
         self.trades = pd.DataFrame(columns=['Date', 'Ticker', 'Signal'])
-        daily_data = indicator[0]
-        weekly_data = indicator[1]
+        self.trades.set_index('Date', inplace=True)
+        daily_data = indicators[0]
+        weekly_data = indicators[1]
         
         Fast_K_str = 'Close-K{}'.format(self.k_window)
         Fast_D_str = 'Close-K{}-EMA{}'.format(self.k_window, self.full_k_window)
@@ -311,32 +317,36 @@ class StochasticCross(Strategy):
         #Fast Stochastic Oscillator:
         #Fast %K = %K basic calculation
         #Fast %D = 5-period SMA of Fast %K
-        daily_data.get_k('Close', self.k_window)
-        daily_data.get_ema(Fast_K_str, self.full_k_window)
+        if 'D%D' not in daily_data.data.columns:
+            daily_data.get_k('Close', self.k_window)
+            daily_data.get_ema(Fast_K_str, self.full_k_window)
 
         #Full Stochastic Oscillator:
         #Full %K = Fast %D
         #Full %D = 5-period EMA of Full %K
-        daily_data.get_ema(Full_K_str, self.full_d_window)
+        if 'D%K' not in daily_data.data.columns:
+            daily_data.get_ema(Full_K_str, self.full_d_window)
+
         daily_data.data['DClose'] = daily_data.data['Close']
         daily_data.data.rename(columns={Full_K_str: 'D%K', Full_D_str: 'D%D'}, inplace=True)
 
         #Weekly Stochastic Oscillator:
-        weekly_data.get_k('Close', self.k_window)
-        weekly_data.get_ema(Fast_K_str, self.full_k_window)
-        weekly_data.get_ema(Full_K_str, self.full_d_window)
+        if 'W%K' not in weekly_data.data.columns:
+            weekly_data.get_k('Close', self.k_window)
+            weekly_data.get_ema(Fast_K_str, self.full_k_window)
+        if 'W%D' not in weekly_data.data.columns:
+            weekly_data.get_ema(Full_K_str, self.full_d_window)
+        
         weekly_data.data['WClose'] = weekly_data.data['Close']
         weekly_data.data.rename(columns={Full_K_str: 'W%K', Full_D_str: 'W%D'}, inplace=True)
 
         #join daily and weekly data together into one dataframe joined_data, keep DClose, D%K, D%D, WClose, W%K, W%D
         #keep all daily data, patch weekly data that has a corresponding daily data
         self.joined_data = daily_data.data[['DClose','D%K','D%D']].merge(weekly_data.data[['WClose','W%K','W%D']], how='left', left_index=True, right_index=True)
-        print(self.joined_data)
-
         #fill in the NA value in W%K, W%D with the next available value
-        self.joined_data['W%K'] = self.joined_data['W%K'].fillna(method='bfill')
-        self.joined_data['W%D'] = self.joined_data['W%D'].fillna(method='bfill')
-        self.joined_data['WClose'] = self.joined_data['WClose'].fillna(method='bfill')
+        self.joined_data['W%K'] = self.joined_data['W%K'].fillna(method='ffill')
+        self.joined_data['W%D'] = self.joined_data['W%D'].fillna(method='ffill')
+        self.joined_data['WClose'] = self.joined_data['WClose'].fillna(method='ffill')
         
         #determin if Weekly %K Going Up or Flat, into a new column W%K-UP
         self.joined_data['W%K-UP'] = np.where(self.joined_data['W%K'] >= self.joined_data['W%K'].shift(1), 1.0, 0.0)
@@ -349,9 +359,11 @@ class StochasticCross(Strategy):
 
         #stop loss rule: TQQQ drop 10% or more in a day
         self.joined_data['Signal'] = np.where((self.joined_data['DClose'] < self.joined_data['DClose'].shift(1) * 0.9), -1.0, self.joined_data['Signal'])
-
+        #for resarch purpose, keep the stop loss rule in a separate column
+        self.joined_data['Stoploss'] = np.where((self.joined_data['DClose'] < self.joined_data['DClose'].shift(1) * 0.9), -1.0, 0) 
+        #only keep sd to ed data
+        self.joined_data = self.joined_data.loc[sd:ed]
         self.trades = self.joined_data[['Signal']]
-        self.trades.reset_index(inplace=True)
 
 
 class CustomizedStrategy(Strategy):
@@ -374,7 +386,6 @@ class CustomizedStrategy(Strategy):
             pass
 
         self.trades = self.joined_data[['Signal']]
-        self.trades.reset_index(inplace=True)
 
 
 class Portfolio(metaclass=ABCMeta):
@@ -386,6 +397,7 @@ class Portfolio(metaclass=ABCMeta):
         # Real account balance should be Cash+Stock-Margin = Total
         self.balance = pd.DataFrame(
             columns=['Date', 'Cash', 'Stock', 'Total', 'Margin'])
+        self.balance.set_index('Date', inplace=True)
         self.name = None
         self.trade_records = pd.DataFrame(columns=[
                                           'Buy Date', 'Sell Date', 'Ticker', 'Quant', 'Buy Price', 'Sell Price', 'Profit', 'Profit %'])
@@ -415,8 +427,8 @@ class Portfolio(metaclass=ABCMeta):
         self.std_return = daily_return.std()
         self.sharp_ratio = self.avg_return/self.std_return
         # get the first and last trading date from balance ['Date']
-        start_date = self.balance['Date'].iloc[0]
-        end_date = self.balance['Date'].iloc[-1]
+        start_date = self.balance.index[0]
+        end_date = self.balance.index[-1]
         trading_dates = end_date - start_date
         # annual return
         if round((trading_dates.days/252)) == 0:
@@ -509,8 +521,10 @@ class BackTest(Portfolio):
         # put the buy order into the trade list
         self.trade_records.loc[len(self.trade_records)] = [
             date, np.nan, ticker, quantity, price, np.nan, np.nan, np.nan]
+        self.balance.loc[date, 'Trade'] = 1
 
     def __record_sell(self, ticker: str, date, price: float, quantity: float):
+        self.balance.loc[date, 'Trade'] = -1
         # put the sell order into the trade list,find the last buy order with empty sell date
         i = self.trade_records[self.trade_records['Ticker'] ==
                                ticker][self.trade_records['Sell Date'].isnull()].index
@@ -533,107 +547,62 @@ class BackTest(Portfolio):
         self.name = strategy.name
         sd = max(start_date, stock_data.data.index.min())
         ed = min(end_date, stock_data.data.index.max())
-        # copy the stock data index to the self.balance['Date'] within the given date range
-        self.balance['Date'] = stock_data.data.loc[sd:ed].index
+        #copy the stock data index to the self.balance['Date'] within the given date range
+        self.balance = stock_data.data[['Close','Weekday']].loc[sd:ed].copy()
+        #rename Close to stocker_data.ticker
+        self.balance.rename(columns={'Close': stock_data.ticker}, inplace=True)
+        
+        #merge the strategy signal to the balance
+        self.balance = self.balance.merge(strategy.trades['Signal'], how='left', left_index=True, right_index=True)
+        
+        #fill Signal the NaN with 0
+        self.balance['Signal'].fillna(0, inplace=True)
+
         self.balance['Cash'] = 0
         self.balance['Stock'] = 0
         self.balance['Total'] = 0
         self.balance['Margin'] = 0
+        self.balance['Trade'] = 0
 
-        self.balance.loc[0, 'Cash'] = self.principal
-        self.balance.loc[0, 'Stock'] = 0
-        self.balance.loc[0, 'Total'] = self.principal
+        self.balance.loc[self.balance.index[0], 'Cash'] = self.principal
+        self.balance.loc[self.balance.index[0], 'Total'] = self.principal
 
-        x = self.balance.iterrows()
-        y = strategy.trades.iterrows()
-        i = next(x, None)
-        j = next(y, None)
-        if j is None:
-            print("No action on this strategy")
-            return
-
-        p_stock = self.balance.loc[0, 'Stock']
-        p_cash = self.balance.loc[0, 'Cash']
-        p_total = self.balance.loc[0, 'Total']
-
-        while i is not None:
-            c_price = stock_data.data.loc[i[1]['Date'], 'Close']
-            if j is None:
-                self.__copy_balance(i, p_cash, p_stock,
-                                    p_cash + p_stock * c_price)
+        p_cash = self.principal
+        p_stock = 0
+        #iterate through the balance
+        for i in self.balance.iterrows():
+            c_price = i[1][stock_data.ticker]
+            if(i[1]['Signal'] == 1 and self.pyramiding_count < self.pyramiding):
+                self.pyramiding_count = self.pyramiding_count + 1
+                self.balance.loc[i[0],'Stock'] = p_stock + p_cash / c_price
+                self.balance.loc[i[0], 'Cash'] = 0
+                self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0],'Cash'] + self.balance.loc[i[0], 'Stock'] * c_price
+                self.__record_buy(stock_data.ticker, i[0], c_price,  self.balance.loc[i[0], 'Stock'])
                 if (verbose):
-                    print('{} No action due to trades used up'.format(
-                        i[1]['Date']))
-            elif i[1]['Date'] == j[1]['Date']:
-                if (weekly_buy and i[1]['Date'].weekday() != 4 and j[1]['Signal'] == 1) or (weekly_sell and i[1]['Date'].weekday() != 4 and j[1]['Signal'] == -1):
-                    self.__copy_balance(i, p_cash, p_stock,
-                                        p_cash + p_stock * c_price)
-                    if (verbose):
-                        print('{} No action due to not Friday'.format(
-                            i[1]['Date']))
+                    print('{} Buy {}'.format(i[0], self.balance.loc[i[0], 'Stock']))
 
-                elif j[1]['Signal'] == 1:
-                    if self.pyramiding_count < self.pyramiding:
-                        self.pyramiding_count = self.pyramiding_count + 1
-                        self.balance.loc[i[0],
-                                         'Stock'] = p_stock + p_cash / c_price
-                        self.balance.loc[i[0], 'Cash'] = 0
-                        self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0],
-                                                                           'Cash'] + self.balance.loc[i[0], 'Stock'] * c_price
-                        self.__record_buy(
-                            stock_data.ticker, i[1]['Date'], c_price,  self.balance.loc[i[0], 'Stock'])
-                        if (verbose):
-                            print('{} Buy {}'.format(
-                                i[1]['Date'], self.balance.loc[i[0], 'Stock']))
-                    else:
-                        self.__copy_balance(
-                            i, p_cash, p_stock, p_cash + p_stock * c_price)
-                        if (verbose):
-                            print('{} Pyramiding limit reached, no buy'.format(
-                                i[1]['Date']))
-
-                elif j[1]['Signal'] == -1:
-                    if self.pyramiding_count > 0:
-                        self.balance.loc[i[0], 'Stock'] = 0
-                        self.balance.loc[i[0],
-                                         'Cash'] = p_cash + p_stock * c_price
-                        self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0],
-                                                                           'Cash'] + self.balance.loc[i[0], 'Stock'] * c_price
-                        self.pyramiding_count = self.pyramiding_count - 1
-                        self.__record_sell(
-                            stock_data.ticker, i[1]['Date'], c_price, p_stock)
-                        if (verbose):
-                            print('{} Sell {}'.format(i[1]['Date'], p_stock))
-                    else:
-                        self.__copy_balance(
-                            i, p_cash, p_stock, p_cash + p_stock * c_price)
-                        if (verbose):
-                            print('{} No stock to sell'.format(i[1]['Date']))
-                else:
-                    self.__copy_balance(i, p_cash, p_stock,
-                                        p_cash + p_stock * c_price)
-                    if (verbose):
-                        print('{} strategy No action'.format(i[1]['Date']))
-                j = next(y, None)
+            elif(i[1]['Signal'] == -1 and self.pyramiding_count > 0):
+                self.balance.loc[i[0], 'Stock'] = 0
+                self.balance.loc[i[0],'Cash'] = p_cash + p_stock * c_price
+                self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0],'Cash'] + self.balance.loc[i[0], 'Stock'] * c_price
+                self.pyramiding_count = self.pyramiding_count - 1
+                self.__record_sell(stock_data.ticker, i[0], c_price, p_stock)
+                if (verbose):
+                    print('{} Sell {}'.format(i[0], p_stock))
             else:
                 if verbose:
-                    print('No action on {}'.format(i[1]['Date']))
-                self.__copy_balance(i, p_cash, p_stock,
-                                    p_cash + p_stock * c_price)
+                    print('{} No action'.format(i[0]))
+                self.__copy_balance(i, p_cash, p_stock,p_cash + p_stock * c_price)
 
             p_stock = self.balance.loc[i[0], 'Stock']
             p_cash = self.balance.loc[i[0], 'Cash']
-            p_total = self.balance.loc[i[0], 'Total']
-            i = next(x, None)
 
         if self.balance.iloc[-1]['Stock'] > 0:
             # if there is still stock left, force to sell it
-            self.balance.loc[self.balance.index[-1], 'Total'] = self.balance.iloc[-1]['Stock'] * + \
-                stock_data.data.loc[self.balance.iloc[-1]['Date'], 'Close']
+            self.balance.loc[self.balance.index[-1], 'Total'] = self.balance.iloc[-1]['Stock'] * self.balance.iloc[-1][stock_data.ticker]
             self.balance.loc[self.balance.index[-1], 'Stock'] = 0
             self.balance.loc[self.balance.index[-1], 'Cash'] = 0
-            self.__record_sell(
-                stock_data.ticker, self.balance.iloc[-1]['Date'], stock_data.data.loc[self.balance.iloc[-1]['Date'], 'Close'], self.balance.iloc[-1]['Stock'])
+            self.__record_sell(stock_data.ticker, self.balance.index[-1], self.balance.iloc[-1][stock_data.ticker], self.balance.iloc[-1]['Stock'])
 
     def plot_records(self):
         plt.figure(figsize=(16, 4))
@@ -643,7 +612,7 @@ class BackTest(Portfolio):
 
     def plot_balance(self):
         plt.figure(figsize=(16, 4))
-        plt.plot(self.balance['Date'], self.balance['Total'], label=self.name)
+        plt.plot(self.balance.index, self.balance['Total'], label=self.name)
         plt.legend()
 
     def performance_summary(self, v=True):
