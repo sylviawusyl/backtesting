@@ -354,14 +354,15 @@ class StochasticCross(Strategy):
         #determin if Weekly %K Going Up or Flat, into a new column W%K-UP
         self.joined_data['W%K-UP'] = np.where(self.joined_data['W%K'] >= self.joined_data['W%K'].shift(1), 1.0, 0.0)
 
-        #buy rule: Daily %K above %D, Weekly %K Going Up, Daily %K above oversold
-        self.joined_data['Signal'] = np.where((self.joined_data['D%K'] > self.joined_data['D%D']) & (self.joined_data['W%K-UP'] == 1.0) & (self.joined_data['D%K'] > self.oversold), 1.0, 0.0)
-
         if self.var == 0:
-            #sell rule: Weekly %K under %D, Weekly %K under 80
+            #buy rule: Daily %K above %D, Weekly %K Going Up, Daily %K above oversold
+            self.joined_data['Signal'] = np.where((self.joined_data['D%K'] > self.joined_data['D%D']) & (self.joined_data['W%K-UP'] == 1.0) & (self.joined_data['D%K'] > self.oversold), 1.0, 0.0)
+            #sell rule: Weekly %K under %D, Weekly %K under overbought
             self.joined_data['Signal'] = np.where((self.joined_data['W%K'] < self.joined_data['W%D']) & (self.joined_data['W%K'] < self.overbought), -1.0, self.joined_data['Signal'])
         elif self.var == 1:
-            #sell rule: Daily %K under %D, Daily %K under 80
+            #buy rule: Daily %K above %D, Daily %K above oversold
+            self.joined_data['Signal'] = np.where((self.joined_data['D%K'] > self.joined_data['D%D']) & (self.joined_data['D%K'] > self.oversold), 1.0, 0.0)
+            #sell rule: Daily %K under %D, Daily %K under overbought
             self.joined_data['Signal'] = np.where((self.joined_data['D%K'] < self.joined_data['D%D']) & (self.joined_data['D%K'] < self.overbought), -1.0, self.joined_data['Signal'])
         
         if self.ma_notrade != 0:
@@ -576,6 +577,8 @@ class BackTest(Portfolio):
         self.balance['Total'] = 0
         self.balance['Margin'] = 0
         self.balance['Trade'] = 0
+        self.balance['Buy Price'] = 0
+        self.balance['Profit'] = 0
 
         self.balance.loc[self.balance.index[0], 'Cash'] = self.principal
         self.balance.loc[self.balance.index[0], 'Total'] = self.principal
@@ -591,6 +594,7 @@ class BackTest(Portfolio):
                 self.balance.loc[i[0], 'Cash'] = 0
                 self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0],'Cash'] + self.balance.loc[i[0], 'Stock'] * c_price
                 self.__record_buy(stock_data.ticker, i[0], c_price,  self.balance.loc[i[0], 'Stock'])
+                self.balance.loc[i[0], 'Buy Price'] = self.balance.loc[i[0], 'Total']
                 if (verbose):
                     print('{} Buy {}'.format(i[0], self.balance.loc[i[0], 'Stock']))
 
@@ -616,8 +620,14 @@ class BackTest(Portfolio):
             self.balance.loc[self.balance.index[-1], 'Stock'] = 0
             self.balance.loc[self.balance.index[-1], 'Cash'] = 0
             self.__record_sell(stock_data.ticker, self.balance.index[-1], self.balance.iloc[-1][stock_data.ticker], self.balance.iloc[-1]['Stock'])
+
+        self.balance['Buy Price'] = self.balance.loc[(self.balance['Stock'] != 0) | (self.balance['Trade'] != 0), 'Buy Price'].replace(0, np.nan).ffill()
+        self.balance['Profit'] = self.balance['Total'] - self.balance['Buy Price']
+        #replace the Profit with NaN for better plot
+        
         if(strategy.joined_data is not None):
             self.joined_data = self.balance.merge(strategy.joined_data, how='left', left_index=True, right_index=True)
+        
 
     def plot_records(self):
         plt.figure(figsize=(16, 4))
@@ -629,7 +639,7 @@ class BackTest(Portfolio):
         plt.figure(figsize=(16, 4))
         plt.plot(self.balance.index, self.balance['Total'], label=self.name)
         plt.legend()
-    def plot_joined_data(self, indicator_column:[str], start_date, end_date):
+    def plot_joined_data(self, indicator_column:[str], start_date, end_date, ydash_low = None, ydash_high = None):
         plt.figure(figsize=(16, 3))
         #plot stock with indicator_columns bewteen start_date and end_date
         for i in indicator_column:
@@ -642,6 +652,11 @@ class BackTest(Portfolio):
                 plt.axvline(x=idx, color = 'red', linestyle='dashed') 
             if row['Trade']>0:
                 plt.axvline(x=idx, color = 'green', linestyle='dashed') 
+
+        if ydash_low is not None:
+            plt.axhline(y=ydash_low, color = 'black', linestyle='solid')
+        if ydash_high is not None:
+            plt.axhline(y=ydash_high, color = 'black', linestyle='solid')
         plt.legend()
     def performance_summary(self, v=True):
         return super().performance_summary(verbose=v)
