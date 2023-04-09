@@ -136,6 +136,7 @@ class Strategy(metaclass=ABCMeta):
         self.trades = pd.DataFrame(columns=['Date', 'Signal'])
         self.trades.set_index(['Date'], inplace=True)
         self.name = name
+        self.joined_data = None
         # Action: Buy, Sell, StopLoss, TakeProfit, BuyAll, SellAll
 
     @abstractmethod
@@ -294,13 +295,15 @@ class Threshold(Strategy):
 #Stop Loss Rule:
 #TQQQ drop 10% or more in a day
 class StochasticCross(Strategy):
-    def __init__(self, name: str = 'Stochastic', k_window=14, full_k_window=5, full_d_window=5, overbought=80, oversold=10, stop_loss: float = 0, take_profit: float = 0):
+    def __init__(self, name: str = 'Stochastic', k_window=14, full_k_window=5, full_d_window=5, overbought=80, oversold=10, stop_loss: float = 0, take_profit: float = 0, var=0, ma_notrade=0):
         super().__init__(name, stop_loss, take_profit)
         self.k_window = k_window
         self.full_k_window = full_k_window
         self.full_d_window = full_d_window
         self.oversold = oversold
         self.overbought = overbought
+        self.var = var
+        self.ma_notrade = ma_notrade
 
     def run_strategy(self, indicators, sd: dt.datetime, ed: dt.datetime):
         self.trades = pd.DataFrame(columns=['Date', 'Ticker', 'Signal'])
@@ -354,9 +357,19 @@ class StochasticCross(Strategy):
         #buy rule: Daily %K above %D, Weekly %K Going Up, Daily %K above oversold
         self.joined_data['Signal'] = np.where((self.joined_data['D%K'] > self.joined_data['D%D']) & (self.joined_data['W%K-UP'] == 1.0) & (self.joined_data['D%K'] > self.oversold), 1.0, 0.0)
 
-        #sell rule: Weekly %K under %D, Weekly %K under 80
-        self.joined_data['Signal'] = np.where((self.joined_data['W%K'] < self.joined_data['W%D']) & (self.joined_data['W%K'] < self.overbought), -1.0, self.joined_data['Signal'])
-
+        if self.var == 0:
+            #sell rule: Weekly %K under %D, Weekly %K under 80
+            self.joined_data['Signal'] = np.where((self.joined_data['W%K'] < self.joined_data['W%D']) & (self.joined_data['W%K'] < self.overbought), -1.0, self.joined_data['Signal'])
+        elif self.var == 1:
+            #sell rule: Daily %K under %D, Daily %K under 80
+            self.joined_data['Signal'] = np.where((self.joined_data['D%K'] < self.joined_data['D%D']) & (self.joined_data['D%K'] < self.overbought), -1.0, self.joined_data['Signal'])
+        
+        if self.ma_notrade != 0:
+            #sell rule: when under moving average, sell
+            daily_data.get_sma('Close', self.ma_notrade)
+            self.joined_data = self.joined_data.merge(daily_data.data[['Close-SMA{}'.format(self.ma_notrade)]], how='left', left_index=True, right_index=True)
+            self.joined_data['Signal'] = np.where((self.joined_data['DClose'] < self.joined_data['Close-SMA{}'.format(self.ma_notrade)]), -1.0, self.joined_data['Signal'])
+        
         #stop loss rule: TQQQ drop 10% or more in a day
         self.joined_data['Signal'] = np.where((self.joined_data['DClose'] < self.joined_data['DClose'].shift(1) * 0.9), -1.0, self.joined_data['Signal'])
         #for resarch purpose, keep the stop loss rule in a separate column
@@ -398,6 +411,7 @@ class Portfolio(metaclass=ABCMeta):
         self.balance = pd.DataFrame(
             columns=['Date', 'Cash', 'Stock', 'Total', 'Margin'])
         self.balance.set_index('Date', inplace=True)
+        self.joined_data = None
         self.name = None
         self.trade_records = pd.DataFrame(columns=[
                                           'Buy Date', 'Sell Date', 'Ticker', 'Quant', 'Buy Price', 'Sell Price', 'Profit', 'Profit %'])
@@ -519,24 +533,20 @@ class BackTest(Portfolio):
 
     def __record_buy(self, ticker: str, date, price: float, quantity: float):
         # put the buy order into the trade list
-        self.trade_records.loc[len(self.trade_records)] = [
-            date, np.nan, ticker, quantity, price, np.nan, np.nan, np.nan]
+        self.trade_records.loc[len(self.trade_records)] = [date, np.nan, ticker, quantity, price, np.nan, np.nan, np.nan]
         self.balance.loc[date, 'Trade'] = 1
 
     def __record_sell(self, ticker: str, date, price: float, quantity: float):
         self.balance.loc[date, 'Trade'] = -1
         # put the sell order into the trade list,find the last buy order with empty sell date
-        i = self.trade_records[self.trade_records['Ticker'] ==
-                               ticker][self.trade_records['Sell Date'].isnull()].index
+        i = self.trade_records[self.trade_records['Ticker'] ==ticker][self.trade_records['Sell Date'].isnull()].index
         if i.empty:
             print('No buy order for ticker {} on date {}'.format(ticker, date))
             return
         self.trade_records.loc[i, 'Sell Date'] = date
         self.trade_records.loc[i, 'Sell Price'] = price
-        self.trade_records.loc[i, 'Profit'] = (
-            price - self.trade_records.loc[i, 'Buy Price'].values[0]) * quantity
-        self.trade_records.loc[i, 'Profit %'] = (
-            price - self.trade_records.loc[i, 'Buy Price'].values[0]) / self.trade_records.loc[i, 'Buy Price'].values[0]
+        self.trade_records.loc[i, 'Profit'] = (price - self.trade_records.loc[i, 'Buy Price'].values[0]) * quantity
+        self.trade_records.loc[i, 'Profit %'] = (price - self.trade_records.loc[i, 'Buy Price'].values[0]) / self.trade_records.loc[i, 'Buy Price'].values[0]
 
     def __copy_balance(self, i, cash, stock, total):
         self.balance.loc[i[0], 'Cash'] = cash
@@ -547,6 +557,9 @@ class BackTest(Portfolio):
         self.name = strategy.name
         sd = max(start_date, stock_data.data.index.min())
         ed = min(end_date, stock_data.data.index.max())
+
+        
+
         #copy the stock data index to the self.balance['Date'] within the given date range
         self.balance = stock_data.data[['Close','Weekday']].loc[sd:ed].copy()
         #rename Close to stocker_data.ticker
@@ -603,6 +616,8 @@ class BackTest(Portfolio):
             self.balance.loc[self.balance.index[-1], 'Stock'] = 0
             self.balance.loc[self.balance.index[-1], 'Cash'] = 0
             self.__record_sell(stock_data.ticker, self.balance.index[-1], self.balance.iloc[-1][stock_data.ticker], self.balance.iloc[-1]['Stock'])
+        if(strategy.joined_data is not None):
+            self.joined_data = self.balance.merge(strategy.joined_data, how='left', left_index=True, right_index=True)
 
     def plot_records(self):
         plt.figure(figsize=(16, 4))
@@ -614,6 +629,19 @@ class BackTest(Portfolio):
         plt.figure(figsize=(16, 4))
         plt.plot(self.balance.index, self.balance['Total'], label=self.name)
         plt.legend()
+    def plot_joined_data(self, indicator_column:[str], start_date, end_date):
+        plt.figure(figsize=(16, 3))
+        #plot stock with indicator_columns bewteen start_date and end_date
+        for i in indicator_column:
+            plt.plot(self.joined_data.loc[start_date:end_date][i], label=i)
 
+        for idx, row in self.joined_data.iterrows():
+            if idx < start_date or idx > end_date:
+                continue
+            if row['Trade']<0:
+                plt.axvline(x=idx, color = 'red', linestyle='dashed') 
+            if row['Trade']>0:
+                plt.axvline(x=idx, color = 'green', linestyle='dashed') 
+        plt.legend()
     def performance_summary(self, v=True):
         return super().performance_summary(verbose=v)
