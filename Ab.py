@@ -504,10 +504,10 @@ class Portfolio(metaclass=ABCMeta):
         self.num_trades = self.balance.Stock.nunique()
 
         # trade_record analysis
-        # betting average
+        # batting average
         gain = len(self.trade_records.loc[self.trade_records['Profit %'] > 0])
         loss = len(self.trade_records.loc[self.trade_records['Profit %'] <= 0])
-        bet_avg = gain/(gain+loss)
+        bat_avg = gain/(gain+loss)
         gain_avg = self.trade_records.loc[self.trade_records['Profit %'] > 0, 'Profit %'].mean()
         loss_avg = self.trade_records.loc[self.trade_records['Profit %'] <= 0, 'Profit %'].mean()
         gain_std = self.trade_records.loc[self.trade_records['Profit %'] > 0, 'Profit %'].std()
@@ -524,7 +524,7 @@ average of daily return: {:.4%}
 std of daily return    : {:.4%}
 number of trades       : {},
 trading days           : {},
-Betting Average        : {:.2%}
+batting Average        : {:.2%}
 Gain Average           : {:.2%}
 Loss Average           : {:.2%}
 Risk Reward Ratio      : {:.2f}
@@ -540,7 +540,7 @@ Loss STD               : {:.2%}
                 self.std_return.values[0],
                 self.num_trades,
                 trading_dates.days,
-                bet_avg,
+                bat_avg,
                 gain_avg,
                 loss_avg,
                 gain_avg/-loss_avg,
@@ -552,7 +552,7 @@ Loss STD               : {:.2%}
                        'cumulative_return', 'annual_return', 'max_drawdown',
                        'sharp_ratio',  'avg_daily_return',
                        'std_daily_return', 'num_trading_days',
-                       'Betting Average',
+                       'batting Average',
                        'Gain Average',
                        'Loss Average',
                        'Risk Reward Ratio',
@@ -565,7 +565,7 @@ Loss STD               : {:.2%}
                  1, self.max_drawdown.values[0],
                  self.sharp_ratio.values[0], self.avg_return.values[0], self.std_return.values[0],
                  trading_dates.days,
-                 bet_avg,
+                 bat_avg,
                  gain_avg,
                  loss_avg,
                  gain_avg/-loss_avg,
@@ -605,6 +605,7 @@ class BackTest(Portfolio):
 
     def run_backtest(self, strategy: Strategy, stock_data: StockData, start_date, end_date, weekly_buy=False, weekly_sell=False, verbose=False):
         self.name = strategy.name
+        self.ticker = stock_data.ticker
         sd = max(start_date, stock_data.data.index.min())
         ed = min(end_date, stock_data.data.index.max())
 
@@ -682,11 +683,13 @@ class BackTest(Portfolio):
         plt.figure(figsize=(16, 4))
         plt.bar(self.trade_records.index,
                 self.trade_records['Profit %'], label=self.name)
+        plt.title('{} Trade Records on {}'.format(self.name, self.ticker))
         plt.legend()
 
     def plot_balance(self):
         plt.figure(figsize=(16, 4))
         plt.plot(self.balance.index, self.balance['Total'], label=self.name)
+        plt.title('{} Portfolio Balance on {}'.format(self.name, self.ticker))
         plt.legend()
     def plot_joined_data(self, indicator_column:[str], start_date, end_date, ydash_low = None, ydash_high = None):
         plt.figure(figsize=(16, 3))
@@ -706,6 +709,7 @@ class BackTest(Portfolio):
             plt.axhline(y=ydash_low, color = 'black', linestyle='solid')
         if ydash_high is not None:
             plt.axhline(y=ydash_high, color = 'black', linestyle='solid')
+        plt.title('{} Analysis on {}'.format(self.name, self.ticker))
         plt.legend()
     def performance_summary(self, v=True):
         return super().performance_summary(verbose=v)
