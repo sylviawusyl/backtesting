@@ -382,6 +382,52 @@ class StochasticCross(Strategy):
         self.joined_data = self.joined_data.loc[sd:ed]
         self.trades = self.joined_data[['Signal']]
 
+class fftyspy_stg(Strategy):
+    def __init__(self, name: str = 'fftyspy_stg', stop_loss: float = 0, take_profit: float = 0,  ffty_sell_threshold = 0.95, ffty_buy_threshold = 1.02, spy_consecutive_buy_threshold = 1, spy_consecutive_days = 10, spy_max_off_new_high_pct = -0.2):
+        super().__init__(name, stop_loss, take_profit)
+        self.ffty_sell_threshold = ffty_sell_threshold
+        self.ffty_buy_threshold = ffty_buy_threshold
+        self.spy_consecutive_buy_threshold = spy_consecutive_buy_threshold
+        self.spy_consecutive_days = spy_consecutive_days
+        self.spy_max_off_new_high_pct = spy_max_off_new_high_pct
+
+
+    def run_strategy(self, indicators, sd: dt.datetime, ed: dt.datetime):
+        ffty = indicators[0]
+        spy = indicators[1]
+        ## ffty signals
+        ffty.get_sma('Close', 200)
+        ffty_signals_df = ffty.data[['Close','Close-SMA200']].copy()
+
+        #rename columns
+        ffty_signals_df.rename(columns={'Close':'FFTY', 'Close-SMA200':'FFTY-SMA200'}, inplace=True)
+        ffty_signals_df['Signal'] = np.where(ffty_signals_df[ffty.ticker] > ffty_signals_df['{}-SMA200'.format(ffty.ticker)] * self.ffty_buy_threshold, 1.0, 0.0)
+        ffty_signals_df['Signal'] = np.where(ffty_signals_df[ffty.ticker] < ffty_signals_df['{}-SMA200'.format(ffty.ticker)] * self.ffty_sell_threshold, -1, ffty_signals_df['Signal'])
+        ## spy signals
+        spy.get_sma('Close', 200)
+        spy.data['SPY-to-SMA200'] = (spy.data['Close'] - spy.data['Close-SMA200'])/ spy.data['Close-SMA200']
+        spy.data['new_high'] = spy.data['Close'].cummax()
+        spy.data['off_new_high'] = spy.data['Close'] / spy.data['new_high'] - 1
+        #the down is negative, so we need to take the min
+        spy.data['max_off_new_high'] = spy.data['off_new_high'].rolling(252,min_periods=1).min()
+        spy.data['SPY-to-SMA200_prev'] = spy.data['SPY-to-SMA200'].shift(self.spy_consecutive_days)
+
+        spy_signals_df = spy.data[['Close', 'Close-SMA200','new_high', 'off_new_high', 'max_off_new_high','SPY-to-SMA200', 'SPY-to-SMA200_prev']].copy()
+        spy_signals_df.rename(columns={'Close': 'SPY', 'Close-SMA200' : 'SPY-SMA200'}, inplace=True)
+
+        # buy rule: two consecutive weeks of above 200 AND previously SPY DOWN 20%
+        buy_rule = (spy_signals_df['max_off_new_high']< self.spy_max_off_new_high_pct ) & (spy_signals_df['SPY-to-SMA200'] + 1> self.spy_consecutive_buy_threshold) & (spy_signals_df['SPY-to-SMA200_prev'] + 1>  self.spy_consecutive_buy_threshold)
+        #fill in the first 10 days with 0
+        buy_rule.iloc[0:self.spy_consecutive_days] = False
+        spy_signals_df['Signal'] = np.where(buy_rule, 1, 0)
+
+        signals_df = ffty_signals_df.rename(columns={'Signal':'FFTY_Signal'}).join(spy_signals_df.rename(columns={'Signal':'SPY_Signal'}), how='outer')
+        signals_df['FFTY_Signal'] = signals_df['FFTY_Signal'].fillna(0)
+        signals_df['Signal']= np.where((signals_df['SPY_Signal']==1)|(signals_df['FFTY_Signal']==1), 1, np.where(signals_df['FFTY_Signal']==-1, -1, 0))
+
+        self.joined_data = ffty_signals_df.merge(spy_signals_df, how='left', left_index=True, right_index=True).sort_index()
+        self.trades = signals_df[['Signal']]
+
 
 class CustomizedStrategy(Strategy):
     def __init__(self, signals_df, name: str = 'Customized', stop_loss: float = 0, take_profit: float = 0):
