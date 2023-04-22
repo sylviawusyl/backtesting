@@ -715,7 +715,7 @@ class BackTest(Portfolio):
                 
                 # only collect tax when there's no trade on that day (if go with high freq daily trading, need to revisit) 
                 # check whether it's in April and tax rate is > 0 
-                if i[0].month == 4 and short_term_tax_rate + long_term_tax_rate == 0:
+                if (i[0].month == 4) and (short_term_tax_rate + long_term_tax_rate > 0):
                     self.__collect_tax(i, c_price, long_term_tax_rate , short_term_tax_rate, verbose )
                 
             p_stock = self.balance.loc[i[0], 'Stock']
