@@ -486,7 +486,8 @@ class Portfolio(metaclass=ABCMeta):
         self.joined_data = None
         self.name = None
         self.trade_records = pd.DataFrame(columns=[
-                                          'Buy Date', 'Sell Date', 'Ticker', 'Quant', 'Buy Price', 'Sell Price', 'Profit', 'Profit %'])
+                                          'Buy Date', 'Sell Date', 'Ticker', 'Quant', 'Buy Price', 'Sell Price', 'Profit', 'Profit %',
+                                          'HoldingDays','LongTermProfit','ShortTermProfit', 'TaxCollectYear', 'TaxCollected'])
 
     @abstractmethod
     def run_backtest(self, strategy: Strategy, stock_data: StockData):
@@ -604,7 +605,8 @@ class BackTest(Portfolio):
 
     def __record_buy(self, ticker: str, date, price: float, quantity: float):
         # put the buy order into the trade list
-        self.trade_records.loc[len(self.trade_records)] = [date, np.nan, ticker, quantity, price, np.nan, np.nan, np.nan]
+        self.trade_records.loc[len(self.trade_records)] = [date, np.nan, ticker, quantity, price, np.nan, np.nan, np.nan,
+                                                           np.nan, np.nan, np.nan,np.nan, np.nan]
 
 
     def __record_sell(self, ticker: str, date, price: float, quantity: float):
@@ -613,23 +615,51 @@ class BackTest(Portfolio):
         if i.empty:
             print('No buy order for ticker {} on date {}'.format(ticker, date))
             return
-        self.trade_records.loc[i, 'Sell Date'] = date
+        self.trade_records.loc[i, 'Sell Date'] = pd.to_datetime(date)
+        self.trade_records.loc[i, 'Sell Date'] = pd.to_datetime(self.trade_records.loc[i, 'Sell Date'])
         self.trade_records.loc[i, 'Sell Price'] = price
         self.trade_records.loc[i, 'Profit'] = (price - self.trade_records.loc[i, 'Buy Price'].values[0]) * quantity
         self.trade_records.loc[i, 'Profit %'] = (price - self.trade_records.loc[i, 'Buy Price'].values[0]) / self.trade_records.loc[i, 'Buy Price'].values[0]
+        self.trade_records.loc[i, 'HoldingDays'] = (pd.to_datetime(self.trade_records.loc[i, 'Sell Date']) - self.trade_records.loc[i, 'Buy Date']).dt.days
+        self.trade_records.loc[i, 'LongTermProfit'] = np.where((self.trade_records.loc[i, 'Profit'] > 0) & (self.trade_records.loc[i, 'HoldingDays'] > 365),  self.trade_records.loc[i, 'Profit'], 0)
+        self.trade_records.loc[i, 'ShortTermProfit'] = np.where((self.trade_records.loc[i, 'Profit'] > 0) & (self.trade_records.loc[i, 'HoldingDays'] < 365),  self.trade_records.loc[i, 'Profit'], 0)
+        self.trade_records.loc[i, 'TaxCollectYear'] = pd.to_datetime(self.trade_records.loc[i, 'Sell Date']).dt.year + 1
+        self.trade_records.loc[i, 'TaxCollected'] = 0
 
     def __copy_balance(self, i, cash, stock, total):
         self.balance.loc[i[0], 'Cash'] = cash
         self.balance.loc[i[0], 'Stock'] = stock
         self.balance.loc[i[0], 'Total'] = total
 
-    def run_backtest(self, strategy: Strategy, stock_data: StockData, start_date, end_date, weekly_buy=False, weekly_sell=False, verbose=False):
+    def __collect_tax(self, i, c_price, long_term_tax_rate , short_term_tax_rate, verbose):
+        # check whether if the tax this year (transaction last year) are collected:
+        if self.trade_records.loc[self.trade_records['TaxCollectYear'] == i[0].year, 'TaxCollected'].max() == 0:
+            # if not collected
+
+            # calculate tax to be collected
+            tax_to_collect = (self.trade_records.loc[self.trade_records['TaxCollectYear'] == i[0].year, 'LongTermProfit'] * long_term_tax_rate + \
+            self.trade_records.loc[self.trade_records['TaxCollectYear'] == i[0].year, 'ShortTermProfit'] * short_term_tax_rate).sum()
+
+            # collect from cash or selling stocks
+            if self.balance.loc[i[0], 'Cash'] >= tax_to_collect:
+                self.balance.loc[i[0], 'Cash'] = self.balance.loc[i[0], 'Cash']  - tax_to_collect
+            else:
+                self.balance.loc[i[0], 'Stock'] = self.balance.loc[i[0], 'Stock'] - tax_to_collect/c_price
+            self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0], 'Total'] - tax_to_collect
+
+            # mark as collected
+            self.trade_records.loc[self.trade_records['TaxCollectYear'] == i[0].year, 'TaxCollected'] = tax_to_collect
+
+            if verbose:
+                print(f'{tax_to_collect} Tax collected on {i[0]}' )
+
+    def run_backtest(self, strategy: Strategy, stock_data: StockData, start_date, end_date, weekly_buy=False, weekly_sell=False, 
+                     short_term_tax_rate = 0, long_term_tax_rate = 0, verbose=False):
+        self.verbose = verbose
         self.name = strategy.name
         self.ticker = stock_data.ticker
         sd = max(start_date, stock_data.data.index.min())
         ed = min(end_date, stock_data.data.index.max())
-
-
 
         #copy the stock data index to the self.balance['Date'] within the given date range
         self.balance = stock_data.data[['Close','Weekday']].loc[sd:ed].copy()
@@ -680,10 +710,14 @@ class BackTest(Portfolio):
                     print('{} Sell {}'.format(i[0], p_stock))
             else:
                 self.__copy_balance(i, p_cash, p_stock,p_cash + p_stock * c_price)
-                if verbose:
-                    print('{} No action'.format(i[0]))
-
-
+                #if verbose:
+                    # print('{} No trading action'.format(i[0]))
+                
+                # only collect tax when there's no trade on that day (if go with high freq daily trading, need to revisit) 
+                # check whether it's in April and tax rate is > 0 
+                if i[0].month == 4 and short_term_tax_rate + long_term_tax_rate == 0:
+                    self.__collect_tax(i, c_price, long_term_tax_rate , short_term_tax_rate, verbose )
+                
             p_stock = self.balance.loc[i[0], 'Stock']
             p_cash = self.balance.loc[i[0], 'Cash']
 
