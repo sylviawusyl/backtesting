@@ -21,6 +21,15 @@ from abc import abstractmethod, ABCMeta
 import matplotlib.pyplot as plt
 
 
+def get_sma(df, in_c, out_c, window, min_periods=1):
+    df[out_c] = df[in_c].rolling(window=window).mean()
+def get_ema(df, in_c, out_c, window, min_periods=1):
+    df[out_c] = df[in_c].ewm(span=window, min_periods=min_periods).mean()
+def get_stochastic(df, in_c, out_fastk, out_fk, out_fd, k, fk, fd):
+    df[out_fastk] = df[in_c].rolling(window=k).apply(lambda x: (x[-1] - x.min()) / (x.max() - x.min())*100, raw=True)
+    get_ema(df, out_fastk, out_fk,fk)
+    get_ema(df, out_fk, out_fd, fd)
+
 class StockData(object):
     def __init__(self, ticker: str):
         self.ticker = ticker
@@ -123,15 +132,27 @@ class StockData(object):
         for above_threshold in above_thresholds:
             self.data['above{}'.format(above_threshold)] = np.where(
                 self.data[column] > above_threshold, 1, 0)
-    def get_sma(self, column='Close', sma_window=21):
-        self.data['{}-SMA{}'.format(column, sma_window)] = self.data[column].rolling(
+    def get_sma(self, input_column='Close', sma_window=21, output_column='SMA'):
+        self.data[output_column] = self.data[input_column].rolling(
             window=sma_window, min_periods=1).mean()
-    def get_ema(self, column='Close', ema_window=21):
-        self.data['{}-EMA{}'.format(column, ema_window)] = self.data[column].ewm(
+    def get_ema(self, input_column='Close', ema_window=21, output_column='EMA'):
+        self.data[output_column] = self.data[input_column].ewm(
             span=ema_window, adjust=False).mean()
-    def get_k(self, column='Close', k_window=14):
+    def get_k(self, input_column='Close', k_window=14, output_column='K'):
         #K(fast line) = Close - 14Days low / 14Days high - 14Days low * 100
-        self.data['{}-K{}'.format(column, k_window)] = (self.data[column] - self.data[column].rolling(window=k_window, min_periods=1).min()) / (self.data[column].rolling(window=k_window, min_periods=1).max() - self.data[column].rolling(window=k_window, min_periods=1).min()) * 100
+        self.data[output_column] = (self.data[input_column] - self.data[input_column].rolling(window=k_window, min_periods=1).min()) / (self.data[input_column].rolling(window=k_window, min_periods=1).max() - self.data[input_column].rolling(window=k_window, min_periods=1).min()) * 100
+
+    def get_stochastic(self, input_column='Close', k_window=14, fk_window=5, fd_window=5):
+        #Fast Stochastic Oscillator:
+        #Fast %K = %K basic calculation
+        #Fast %D = 5-period SMA of Fast %K
+        self.get_k(input_column, k_window, '%K-FAST')
+        self.get_ema('%K-FAST', fk_window, '%K')
+
+        #Full Stochastic Oscillator:
+        #Full %K = Fast %D
+        #Full %D = 5-period EMA of Full %K
+        self.get_ema('%K', fd_window, '%D')
 
 class Strategy(metaclass=ABCMeta):
     def __init__(self, name: str, stop_loss: float, take_profit: float):
@@ -303,7 +324,8 @@ class Threshold(Strategy):
 #TQQQ drop 10% or more in a day
 class StochasticCross(Strategy):
     def __init__(self, name: str = 'Stochastic', k_window=14, full_k_window=5, full_d_window=5, overbought=80, oversold=10, stop_loss: float = 0, take_profit: float = 0, var=0, ma_notrade=0):
-        super().__init__(name, stop_loss, take_profit)
+        name_cb = '{}-{}-{}-{}-{}-{}-{}-{}-{}'.format(name, k_window, full_k_window, full_d_window, overbought, oversold, var, ma_notrade, stop_loss)
+        super().__init__(name_cb, stop_loss, take_profit)
         self.k_window = k_window
         self.full_k_window = full_k_window
         self.full_d_window = full_d_window
@@ -313,96 +335,99 @@ class StochasticCross(Strategy):
         self.ma_notrade = ma_notrade
 
     def run_strategy(self, indicators, sd: dt.datetime, ed: dt.datetime):
-        daily_data = indicators[0]
-        weekly_data = indicators[1]
-        weekly_data.data['13WMAX'] = weekly_data.data['Close'].rolling(window=13).max()
-        weekly_data.data['13WMIN'] = weekly_data.data['Close'].rolling(window=13).min()
-        Fast_K_str = 'Close-K{}'.format(self.k_window)
-        Fast_D_str = 'Close-K{}-EMA{}'.format(self.k_window, self.full_k_window)
-        Full_K_str = Fast_D_str
-        Full_D_str = '{}-EMA{}'.format(Full_K_str, self.full_d_window)
+        d_df = indicators[0].data.copy()
+        w_df = indicators[1].data.copy()
+
         #Daily Stochastic Oscillator:
-
-        #Fast Stochastic Oscillator:
-        #Fast %K = %K basic calculation
-        #Fast %D = 5-period SMA of Fast %K
-        if 'D%D' not in daily_data.data.columns:
-            daily_data.get_k('Close', self.k_window)
-            daily_data.get_ema(Fast_K_str, self.full_k_window)
-
-        #Full Stochastic Oscillator:
-        #Full %K = Fast %D
-        #Full %D = 5-period EMA of Full %K
-        if 'D%K' not in daily_data.data.columns:
-            daily_data.get_ema(Full_K_str, self.full_d_window)
-
-        daily_data.data['DClose'] = daily_data.data['Close']
-        daily_data.data.rename(columns={Full_K_str: 'D%K', Full_D_str: 'D%D'}, inplace=True)
+        get_stochastic(d_df, 'Close', 'FastD%K', 'D%K', 'D%D', self.k_window, self.full_k_window, self.full_d_window)
+        d_df.rename(columns={'Close': 'DClose'}, inplace=True)
 
         #Weekly Stochastic Oscillator:
-        if 'W%K' not in weekly_data.data.columns:
-            weekly_data.get_k('Close', self.k_window)
-            weekly_data.get_ema(Fast_K_str, self.full_k_window)
-        if 'W%D' not in weekly_data.data.columns:
-            weekly_data.get_ema(Full_K_str, self.full_d_window)
-
-        weekly_data.data['WClose'] = weekly_data.data['Close']
-        weekly_data.data.rename(columns={Full_K_str: 'W%K', Full_D_str: 'W%D'}, inplace=True)
-
+        get_stochastic(w_df, 'Close', 'FastW%K', 'W%K', 'W%D', self.k_window, self.full_k_window, self.full_d_window)
+        w_df.rename(columns={'Close': 'WClose'}, inplace=True)
+        #determin if Weekly %K Going Up or Flat, into a new column W%K-UP
+        w_df['W%K-UP'] = np.where(w_df['W%K'] > w_df['W%K'].shift(1), 1, 0)
+        w_df['13MIN'] = w_df['WClose'].rolling(window=13).min()
+        w_df['13MAX'] = w_df['WClose'].rolling(window=13).max()
         #join daily and weekly data together into one dataframe joined_data, keep DClose, D%K, D%D, WClose, W%K, W%D
         #keep all daily data, patch weekly data that has a corresponding daily data
-        self.joined_data = daily_data.data[['DClose','D%K','D%D']].merge(weekly_data.data[['WClose','W%K','W%D','13WMAX', '13WMIN']], how='left', left_index=True, right_index=True)
-
-
+        self.joined_data = d_df[['DClose','D%K','D%D']].merge(w_df[['WClose','W%K','W%D','W%K-UP','FastW%K', '13MIN', '13MAX', 'Weekday']], how='left', left_index=True, right_index=True)
         #fill in the NA value in W%K, W%D with the previous available value
         self.joined_data['W%K'] = self.joined_data['W%K'].fillna(method='ffill')
+        self.joined_data['W%K-UP'] = self.joined_data['W%K-UP'].fillna(method='ffill')
         self.joined_data['W%D'] = self.joined_data['W%D'].fillna(method='ffill')
         self.joined_data['WClose'] = self.joined_data['WClose'].fillna(method='ffill')
 
-        self.joined_data['13WMAX'] = self.joined_data['13WMAX'].fillna(method='ffill')
-        self.joined_data['13WMIN'] = self.joined_data['13WMIN'].fillna(method='ffill')
-        self.joined_data['14WMAX'] = np.where(self.joined_data['13WMAX'] > self.joined_data['DClose'], self.joined_data['13WMAX'], self.joined_data['DClose'])
-        self.joined_data['14WMIN'] = np.where(self.joined_data['13WMIN'] < self.joined_data['DClose'], self.joined_data['13WMIN'], self.joined_data['DClose'])
-        #FAST K
-        self.joined_data['WD%Fast-K'] = (self.joined_data['DClose'] - self.joined_data['14WMIN'])/ (self.joined_data['14WMAX'] - self.joined_data['14WMIN']) * 100
-        #FAST D = FULL K
-        self.joined_data['WD%Full-K'] = self.joined_data['WD%Fast-K'].ewm(span=5, adjust=False).mean()
-        #FULL D = 5EMA of FULL K
-        self.joined_data['WD%Full-D'] = self.joined_data['WD%Full-K'].ewm(span=5, adjust=False).mean()
-        self.joined_data.rename(columns={'WD%Full-K': 'WD%K', 'WD%Full-D': 'WD%D'}, inplace=True)
+        self.joined_data['13MIN'] = self.joined_data['13MIN'].fillna(method='ffill')
+        self.joined_data['13MAX'] = self.joined_data['13MAX'].fillna(method='ffill')
 
+        #intra-week weekly %K issue:
+        # use 13 weeks WClose and today's DClose to calculate the 14 weeks intra-week weekly FAST-WD%K
+        # use 4 weeks W%K and today's FAST-WD%K to calculate the 5 weeks WD%K , 5ema
+        # use 4 weeks W%D and today's WD%K to calculate the 5 weeks WD%D, 5ema
+        self.joined_data['14MIN'] = np.where(self.joined_data['DClose'] < self.joined_data['13MIN'], self.joined_data['DClose'], self.joined_data['13MIN'])
+        self.joined_data['14MAX'] = np.where(self.joined_data['DClose'] > self.joined_data['13MAX'], self.joined_data['DClose'], self.joined_data['13MAX'])
+        self.joined_data['FAST-WD%K'] = (self.joined_data['DClose'] - self.joined_data['14MIN']) / (self.joined_data['14MAX'] - self.joined_data['14MIN']) * 100      #fifo to latch the last 4 weeks W%K
 
-        #determin if Weekly %K Going Up or Flat, into a new column W%K-UP
-        self.joined_data['W%K-UP'] = np.where(self.joined_data['W%K'] >= self.joined_data['W%K'].shift(1), 1.0, 0.0)
-        self.joined_data['WD%K-UP'] = np.where(self.joined_data['WD%K'] >= self.joined_data['WD%K'].shift(1), 1.0, 0.0)
+        self.joined_data['BSignal'] = 0
+        self.joined_data['SSignal'] = 0
 
+        #cross event + status
         if self.var == 0:
+            #sell rule: Weekly %K under %D, Weekly %K under overbought
+            self.joined_data['SSignal'] = np.where((self.joined_data['W%K'] < self.joined_data['W%D']) & (self.joined_data['W%K'].shift(1) > self.joined_data['W%D'].shift(1)) & (self.joined_data['W%K'] < self.overbought),
+                                                   -1.0,
+                                                   self.joined_data['SSignal'])
             #buy rule: Daily %K above %D, Weekly %K Going Up, Daily %K above oversold
-            self.joined_data['Signal'] = np.where((self.joined_data['D%K'] > self.joined_data['D%D']) & (self.joined_data['W%K-UP'] == 1.0) & (self.joined_data['D%K'] > self.oversold), 1.0, 0.0)
-            #sell rule: Weekly %K under %D, Weekly %K under overbought
-            self.joined_data['Signal'] = np.where((self.joined_data['W%K'] < self.joined_data['W%D']) & (self.joined_data['W%K'] < self.overbought), -1.0, self.joined_data['Signal'])
+            self.joined_data['BSignal'] = np.where((self.joined_data['D%K'] > self.joined_data['D%D']) & (self.joined_data['D%K'].shift(1) < self.joined_data['D%D'].shift(1)) & (self.joined_data['W%K-UP'] == 1.0) & (self.joined_data['D%K'] > self.oversold),
+                                                   1.0,
+                                                   self.joined_data['BSignal'])
+            #self.joined_data['BSignal'] = np.where((self.joined_data['D%K'] > self.joined_data['D%D']) & (self.joined_data['D%K'] > self.oversold), 1.0, self.joined_data['BSignal'])
         elif self.var == 1:
+            print(self.var)
             #buy rule: Daily %K above %D, Daily %K above oversold
-            self.joined_data['Signal'] = np.where((self.joined_data['D%K'] > self.joined_data['D%D']) & (self.joined_data['D%K'] > self.oversold), 1.0, 0.0)
+            self.joined_data['BSignal'] = np.where((self.joined_data['D%K'] > self.joined_data['D%D']) & (self.joined_data['D%K'] > self.oversold), 1.0, 0.0)
             #sell rule: Daily %K under %D, Daily %K under overbought
-            self.joined_data['Signal'] = np.where((self.joined_data['D%K'] < self.joined_data['D%D']) & (self.joined_data['D%K'] < self.overbought), -1.0, self.joined_data['Signal'])
+            self.joined_data['SSignal'] = np.where((self.joined_data['D%K'] < self.joined_data['D%D']) & (self.joined_data['D%K'] < self.overbought), -1.0, 0.0)
         elif self.var == 3:
-             #buy rule: Daily %K above %D, Weekly %K Going Up, Daily %K above oversold
-            self.joined_data['Signal'] = np.where((self.joined_data['D%K'] > self.joined_data['D%D']) & (self.joined_data['WD%K-UP'] == 1.0) & (self.joined_data['D%K'] > self.oversold), 1.0, 0.0)
+            pass
             #sell rule: Weekly %K under %D, Weekly %K under overbought
-            self.joined_data['Signal'] = np.where((self.joined_data['WD%K'] < self.joined_data['WD%D']) & (self.joined_data['WD%K'] < self.overbought), -1.0, self.joined_data['Signal'])
+            #self.joined_data['SSignal'] = np.where((self.joined_data['WD%K'] < self.joined_data['WD%D']) & (self.joined_data['WD%K'] < self.overbought), -1.0, self.joined_data['SSignal'])
+            #buy rule: Daily %K above %D, Weekly %K Going Up, Daily %K above oversold
+            #self.joined_data['BSignal'] = np.where((self.joined_data['D%K'] > self.joined_data['D%D']) & (self.joined_data['WD%K-UP'] == 1.0) & (self.joined_data['D%K'] > self.oversold), 1.0, 0.0)
+            #self.joined_data['BSignal'] = np.where((self.joined_data['D%K'] > self.joined_data['D%D']) & (self.joined_data['D%K'] > self.oversold), 1.0, 0.0)
         if self.ma_notrade != 0:
             #sell rule: when under moving average, sell
-            daily_data.get_sma('Close', self.ma_notrade)
-            self.joined_data = self.joined_data.merge(daily_data.data[['Close-SMA{}'.format(self.ma_notrade)]], how='left', left_index=True, right_index=True)
-            self.joined_data['Signal'] = np.where((self.joined_data['DClose'] < self.joined_data['Close-SMA{}'.format(self.ma_notrade)]), -1.5, self.joined_data['Signal'])
+            get_sma(self.joined_data, 'DClose', 'DClose-SMA{}'.format(self.ma_notrade), self.ma_notrade, 1)
+            #wipe bsignal when under ma
+            self.joined_data['BSignal'] = np.where((self.joined_data['DClose'] < self.joined_data['DClose-SMA{}'.format(self.ma_notrade)]), 0, self.joined_data['BSignal'])
+            #set ssignal to -1.5 when under ma
+            self.joined_data['SSignal'] = np.where((self.joined_data['DClose'] < self.joined_data['DClose-SMA{}'.format(self.ma_notrade)]), -1.5, self.joined_data['SSignal'])
 
         #stop loss rule: TQQQ drop 10% or more in a day
-        self.joined_data['Signal'] = np.where((self.joined_data['DClose'] < self.joined_data['DClose'].shift(1) * 0.9), -2.0, self.joined_data['Signal'])
+        self.joined_data['SSignal'] = np.where((self.joined_data['DClose'] < self.joined_data['DClose'].shift(1) * 0.9), -2.0, self.joined_data['SSignal'])
+
 
         #only keep sd to ed data
         self.joined_data = self.joined_data.loc[sd:ed]
-        self.trades = self.joined_data[['Signal']]
+        self.trades = self.joined_data[['BSignal','SSignal']]
+"""
+        fifo_fastk = []
+        #fifo to latch the last 4 weeks W%FASTK
+        for i in self.joined_data.index:
+            if(self.joined_data.loc[i, 'Weekday'] == 4):
+                fifo_fastk.append(self.joined_data.loc[i, 'FastW%K'])
+                #if already have 4 weeks of data, pop the oldest one
+                if(len(fifo_fastk) > 4):
+                    fifo_fastk.pop(0)
+            else:
+                #convert to fifo to pandas dataframe with column name 'FastW%K'
+                fifo_df = pd.DataFrame(fifo_fastk, columns=['FastW%K'])
+                #add the self.joined_data.loc[i, 'WD%FASTK']  to the fifo_df
+                fifo_df = fifo_df.append(pd.DataFrame([self.joined_data.loc[i, 'FAST-WD%K']]), ignore_index=True)
+                get_ema(fifo_df, 'FastW%K','WD%K',5)
+                self.joined_data.loc[i, 'WD%K'] = fifo_df.loc[4, 'WD%K']
+"""
 
 class fftyspy_stg(Strategy):
     def __init__(self, name: str = 'fftyspy_stg', stop_loss: float = 0, take_profit: float = 0,  ffty_sell_threshold = 0.95, ffty_buy_threshold = 1.02, spy_consecutive_buy_threshold = 1, spy_consecutive_days = 10, spy_max_off_new_high_pct = -0.2):
@@ -418,7 +443,7 @@ class fftyspy_stg(Strategy):
         ffty = indicators[0]
         spy = indicators[1]
         ## ffty signals
-        ffty.get_sma('Close', 200)
+        ffty.get_sma('Close', 200, 'Close-SMA200')
         ffty_signals_df = ffty.data[['Close','Close-SMA200']].copy()
 
         #rename columns
@@ -426,7 +451,7 @@ class fftyspy_stg(Strategy):
         ffty_signals_df['Signal'] = np.where(ffty_signals_df[ffty.ticker] > ffty_signals_df['{}-SMA200'.format(ffty.ticker)] * self.ffty_buy_threshold, 1.0, 0.0)
         ffty_signals_df['Signal'] = np.where(ffty_signals_df[ffty.ticker] < ffty_signals_df['{}-SMA200'.format(ffty.ticker)] * self.ffty_sell_threshold, -1, ffty_signals_df['Signal'])
         ## spy signals
-        spy.get_sma('Close', 200)
+        spy.get_sma('Close', 200, 'Close-SMA200')
         spy.data['SPY-to-SMA200'] = (spy.data['Close'] - spy.data['Close-SMA200'])/ spy.data['Close-SMA200']
         spy.data['new_high'] = spy.data['Close'].cummax()
         spy.data['off_new_high'] = spy.data['Close'] / spy.data['new_high'] - 1
@@ -443,7 +468,7 @@ class fftyspy_stg(Strategy):
         buy_rule.iloc[0:self.spy_consecutive_days] = False
         spy_signals_df['Signal'] = np.where(buy_rule, 1, 0)
 
-        signals_df = ffty_signals_df.rename(columns={'Signal':'FFTY_Signal'}).join(spy_signals_df.rename(columns={'Signal':'SPY_Signal'}), how='outer')
+        signals_df = ffty_signals_df.rename(columns={'Signal':'FFTY_Signal'}).merge(spy_signals_df.rename(columns={'Signal':'SPY_Signal'}), how='left', left_index=True, right_index=True).sort_index()
         signals_df['FFTY_Signal'] = signals_df['FFTY_Signal'].fillna(0)
         signals_df['Signal']= np.where((signals_df['SPY_Signal']==1)|(signals_df['FFTY_Signal']==1), 1, np.where(signals_df['FFTY_Signal']==-1, -1, 0))
 
@@ -653,7 +678,7 @@ class BackTest(Portfolio):
             if verbose:
                 print(f'{tax_to_collect} Tax collected on {i[0]}' )
 
-    def run_backtest(self, strategy: Strategy, stock_data: StockData, start_date, end_date, weekly_buy=False, weekly_sell=False, 
+    def run_backtest(self, strategy: Strategy, stock_data: StockData, start_date, end_date, weekly_buy=False, weekly_sell=False,
                      short_term_tax_rate = 0, long_term_tax_rate = 0, verbose=False):
         self.verbose = verbose
         self.name = strategy.name
@@ -667,7 +692,13 @@ class BackTest(Portfolio):
         self.balance.rename(columns={'Close': stock_data.ticker}, inplace=True)
 
         #merge the strategy signal to the balance
-        self.balance = self.balance.merge(strategy.trades['Signal'], how='left', left_index=True, right_index=True)
+        if 'BSignal' in strategy.trades.columns and 'SSignal' in strategy.trades.columns:
+            self.balance = self.balance.merge(strategy.trades[['BSignal','SSignal']], how='left', left_index=True, right_index=True)
+            self.balance['Signal'] = 0
+        elif 'Signal' in strategy.trades.columns:
+            self.balance = self.balance.merge(strategy.trades[['Signal']], how='left', left_index=True, right_index=True)
+            self.balance['BSignal'] = 0
+            self.balance['SSignal'] = 0
 
         #fill Signal the NaN with 0
         self.balance['Signal'].fillna(0, inplace=True)
@@ -685,26 +716,32 @@ class BackTest(Portfolio):
 
         p_cash = self.principal
         p_stock = 0
+        p_price = self.balance.iloc[0][stock_data.ticker]
         #iterate through the balance
         for i in self.balance.iterrows():
             c_price = i[1][stock_data.ticker]
-            if(i[1]['Signal'] > 0 and self.pyramiding_count < self.pyramiding):
+            if(i[1]['Signal'] > 0 and self.pyramiding_count < self.pyramiding) or (i[1]['BSignal'] > 0 and self.pyramiding_count < self.pyramiding and p_stock == 0):
                 self.pyramiding_count = self.pyramiding_count + 1
                 self.balance.loc[i[0], 'Stock'] = p_stock + p_cash / c_price
                 self.balance.loc[i[0], 'Cash'] = 0
                 self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0],'Cash'] + self.balance.loc[i[0], 'Stock'] * c_price
                 self.balance.loc[i[0], 'Buy Price'] = self.balance.loc[i[0], 'Total']
-                self.balance.loc[i[0], 'Trade'] = i[1]['Signal']
+                self.balance.loc[i[0], 'Trade'] = i[1]['Signal'] + i[1]['BSignal']
                 self.__record_buy(stock_data.ticker, i[0], c_price,  self.balance.loc[i[0], 'Stock'])
                 if (verbose):
                     print('{} Buy {}'.format(i[0], self.balance.loc[i[0], 'Stock']))
 
-            elif(i[1]['Signal'] < 0 and self.pyramiding_count > 0):
+            elif(i[1]['Signal'] < 0 and self.pyramiding_count > 0) or (i[1]['SSignal'] < 0 and self.pyramiding_count > 0 and p_stock !=0):
+                if i[1]['Signal'] == -2 or i[1]['SSignal'] == -2:
+                    #stop loss sell, cap the loss at yesterdays price -10%
+                    sell_price = p_price * 0.9
+                else:
+                    sell_price = c_price
                 self.balance.loc[i[0], 'Stock'] = 0
-                self.balance.loc[i[0], 'Cash'] = p_cash + p_stock * c_price
-                self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0],'Cash'] + self.balance.loc[i[0], 'Stock'] * c_price
-                self.balance.loc[i[0], 'Trade'] = i[1]['Signal']
-                self.__record_sell(stock_data.ticker, i[0], c_price, p_stock)
+                self.balance.loc[i[0], 'Cash'] = p_cash + p_stock * sell_price
+                self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0],'Cash'] + self.balance.loc[i[0], 'Stock'] * sell_price
+                self.balance.loc[i[0], 'Trade'] = i[1]['Signal'] + i[1]['SSignal']
+                self.__record_sell(stock_data.ticker, i[0], sell_price, p_stock)
                 self.pyramiding_count = self.pyramiding_count - 1
                 if (verbose):
                     print('{} Sell {}'.format(i[0], p_stock))
@@ -712,14 +749,15 @@ class BackTest(Portfolio):
                 self.__copy_balance(i, p_cash, p_stock,p_cash + p_stock * c_price)
                 #if verbose:
                     # print('{} No trading action'.format(i[0]))
-                
-                # only collect tax when there's no trade on that day (if go with high freq daily trading, need to revisit) 
-                # check whether it's in April and tax rate is > 0 
+
+                # only collect tax when there's no trade on that day (if go with high freq daily trading, need to revisit)
+                # check whether it's in April and tax rate is > 0
                 if (i[0].month == 4) and (short_term_tax_rate + long_term_tax_rate > 0):
                     self.__collect_tax(i, c_price, long_term_tax_rate , short_term_tax_rate, verbose )
-                
+
             p_stock = self.balance.loc[i[0], 'Stock']
             p_cash = self.balance.loc[i[0], 'Cash']
+            p_price = c_price
 
         if self.balance.iloc[-1]['Stock'] > 0:
             # if there is still stock left, force to sell it
