@@ -475,6 +475,36 @@ class fftyspy_stg(Strategy):
         self.joined_data = ffty_signals_df.merge(spy_signals_df, how='left', left_index=True, right_index=True).sort_index()
         self.trades = signals_df[['Signal']]
 
+class fftynaa200r_stg(Strategy):
+    def __init__ (self, name: str = 'fftynaa200r_stg', stop_loss: float = 0, take_profit: float = 0,  ffty_ma_window=200, ffty_sell_threshold = 1, ffty_buy_threshold = 1,
+                  naa200r_buy_threshold = 15, naa200r_sell_threshold=30):
+        super().__init__(name, stop_loss, take_profit)
+        self.ffty_sell_threshold = ffty_sell_threshold
+        self.ffty_buy_threshold = ffty_buy_threshold
+        self.naa200r_buy_threshold = naa200r_buy_threshold
+        self.naa200r_sell_threshold = naa200r_sell_threshold
+    def run_strategy(self, indicators, start_date: dt.datetime, end_date: dt.datetime, verbose: bool = False):
+        #use ffty < 200MA as sell rules and naa200R as buy rules.
+        ffty = indicators[0]
+        naa200r = indicators[1]
+        ## ffty signals
+        get_sma(ffty_signals_df, 'Close', 200, 'Close-SMA200')
+        ffty_signals_df = ffty.data[['Close','FFTY-SMA200']].copy()
+        ffty_signals_df.rename(columns={'Close':'FFTY', 'Close-SMA200':'FFTY-SMA200'}, inplace=True)
+        ffty_signals_df['FFTY_Signal'] = np.where(ffty_signals_df[ffty.ticker] > ffty_signals_df['FFTY-SMA200'] * self.ffty_buy_threshold, 1.0, 0.0)
+        ffty_signals_df['FFTY_Signal'] = np.where(ffty_signals_df[ffty.ticker] < ffty_signals_df['FFTY-SMA200'] * self.ffty_sell_threshold, -1, ffty_signals_df['FFTY_Signal'])
+
+        ##naa200r as buy and sell signals
+        get_sma(naa200r,'Close', 20, 'Close-SMA20')
+        naa200r_signals_df = naa200r.data[['Close','Close-SMA20']].copy()
+        naa200r_signals_df.rename(columns={'Close':'NAA200R', 'Close-SMA20':'NAA200R-SMA20'}, inplace=True)
+        naa200r_signals_df['NAA200R_Signal'] = np.where(naa200r_signals_df['NAA200R'] > self.naa200r_buy_threshold  & naa200r_signals_df['NAA200R'] > naa200r_signals_df['NAA200R-SMA20'], 1.0, 0.0)
+        naa200r_signals_df['NAA200R_Signal'] = np.where(naa200r_signals_df['NAA200R'] < self.naa200r_sell_threshold & naa200r_signals_df['NAA200R'] < naa200r_signals_df['NAA200R-SMA20'], -1, naa200r_signals_df['NAA200R_Signal'])
+
+        self.joined_data = ffty_signals_df.merge(naa200r_signals_df, how='left', left_index=True, right_index=True).sort_index()
+        self.joined_data['Signal'] = ffty_signals_df['FFTY_Signal']
+        self.joined_data['Signal'] = np.where(self.joined_data['FFTY_Signal'] != 1 , naa200r_signals_df['NAA200R_Signal'], 0)
+        self.trades = self.joined_data[['Signal']]
 
 class CustomizedStrategy(Strategy):
     def __init__(self, signals_df, name: str = 'Customized', stop_loss: float = 0, take_profit: float = 0):
