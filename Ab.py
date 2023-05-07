@@ -689,14 +689,12 @@ class BackTest(Portfolio):
         self.balance.loc[i[0], 'Stock'] = stock
         self.balance.loc[i[0], 'Total'] = total
 
-    def __collect_tax(self, i, c_price, long_term_tax_rate , short_term_tax_rate, verbose):
-        # check whether if the tax this year (transaction last year) are collected:
-        if self.trade_records.loc[self.trade_records['TaxCollectYear'] == i[0].year, 'TaxCollected'].max() == 0:
-            # if not collected
-
+    def __collect_tax(self, i, tax_collect_year, c_price, long_term_tax_rate , short_term_tax_rate, verbose = False):
+        # check whether if the tax this year (transaction last year) are collected:   
+        if self.trade_records.loc[self.trade_records['TaxCollectYear'] == tax_collect_year, 'TaxCollected'].max() == 0:
             # calculate tax to be collected
-            tax_to_collect = (self.trade_records.loc[self.trade_records['TaxCollectYear'] == i[0].year, 'LongTermProfit'] * long_term_tax_rate + \
-            self.trade_records.loc[self.trade_records['TaxCollectYear'] == i[0].year, 'ShortTermProfit'] * short_term_tax_rate).sum()
+            tax_to_collect = (self.trade_records.loc[self.trade_records['TaxCollectYear'] == tax_collect_year, 'LongTermProfit'] * long_term_tax_rate + \
+            self.trade_records.loc[self.trade_records['TaxCollectYear'] == tax_collect_year, 'ShortTermProfit'] * short_term_tax_rate).sum()
 
             # collect from cash or selling stocks
             if self.balance.loc[i[0], 'Cash'] >= tax_to_collect:
@@ -706,7 +704,7 @@ class BackTest(Portfolio):
             self.balance.loc[i[0], 'Total'] = self.balance.loc[i[0], 'Total'] - tax_to_collect
 
             # mark as collected
-            self.trade_records.loc[self.trade_records['TaxCollectYear'] == i[0].year, 'TaxCollected'] = tax_to_collect
+            self.trade_records.loc[self.trade_records['TaxCollectYear'] == tax_collect_year, 'TaxCollected'] = tax_to_collect
 
             if verbose:
                 print(f'{tax_to_collect} Tax collected on {i[0]}' )
@@ -786,7 +784,7 @@ class BackTest(Portfolio):
                 # only collect tax when there's no trade on that day (if go with high freq daily trading, need to revisit)
                 # check whether it's in April and tax rate is > 0
                 if (i[0].month == 4) and (short_term_tax_rate + long_term_tax_rate > 0):
-                    self.__collect_tax(i, c_price, long_term_tax_rate , short_term_tax_rate, verbose )
+                    self.__collect_tax(i, i[0].year, c_price, long_term_tax_rate , short_term_tax_rate, verbose )
 
             p_stock = self.balance.loc[i[0], 'Stock']
             p_cash = self.balance.loc[i[0], 'Cash']
@@ -798,6 +796,10 @@ class BackTest(Portfolio):
             self.balance.loc[self.balance.index[-1], 'Stock'] = 0
             self.balance.loc[self.balance.index[-1], 'Cash'] = 0
             self.__record_sell(stock_data.ticker, self.balance.index[-1], self.balance.iloc[-1][stock_data.ticker], self.balance.iloc[-1]['Stock'])
+
+        # if there are any trade this year, need to settle tax 
+        for i in self.balance.iloc[[-1]].iterrows():
+            self.__collect_tax(i, i[0].year + 1, c_price, long_term_tax_rate , short_term_tax_rate, verbose )
 
         self.balance['Buy Price'] = self.balance.loc[(self.balance['Stock'] != 0) | (self.balance['Trade'] != 0), 'Buy Price'].replace(0, np.nan).ffill()
         self.balance['Profit'] = (self.balance['Total'] - self.balance['Buy Price'])/self.balance['Buy Price']
