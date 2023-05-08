@@ -446,8 +446,10 @@ class fftyspy_stg(Strategy):
 
         #rename columns
         ffty_signals_df.rename(columns={'Close':'FFTY', 'Close-SMA200':'FFTY-SMA200'}, inplace=True)
-        ffty_signals_df['Signal'] = np.where(ffty_signals_df[ffty.ticker] > ffty_signals_df['{}-SMA200'.format(ffty.ticker)] * self.ffty_buy_threshold, 1.0, 0.0)
-        ffty_signals_df['Signal'] = np.where(ffty_signals_df[ffty.ticker] < ffty_signals_df['{}-SMA200'.format(ffty.ticker)] * self.ffty_sell_threshold, -2, ffty_signals_df['Signal'])
+        ffty_signals_df['FFTY_to_SMA200'] = ffty_signals_df['FFTY']/ ffty_signals_df['FFTY-SMA200']
+        ffty_signals_df['FFTY_Signal'] = np.where((ffty_signals_df['FFTY_to_SMA200'] > self.ffty_buy_threshold) & (ffty_signals_df['FFTY_to_SMA200'].shift(1) < self.ffty_buy_threshold), 1.0, 0.0)
+        ffty_signals_df['FFTY_Signal'] = np.where((ffty_signals_df['FFTY_to_SMA200'] < self.ffty_sell_threshold) & (ffty_signals_df['FFTY_to_SMA200'].shift(1) > self.ffty_sell_threshold), -1.0, ffty_signals_df['FFTY_Signal'])
+
         ## spy signals
         spy.get_sma('Close', 200, 'Close-SMA200')
         spy.data['SPY-to-SMA200'] = (spy.data['Close'] - spy.data['Close-SMA200'])/ spy.data['Close-SMA200']
@@ -461,16 +463,18 @@ class fftyspy_stg(Strategy):
         spy_signals_df.rename(columns={'Close': 'SPY', 'Close-SMA200' : 'SPY-SMA200'}, inplace=True)
 
         # buy rule: two consecutive weeks of above 200 AND previously SPY DOWN 20%
-        buy_rule = (spy_signals_df['max_off_new_high']< self.spy_max_off_new_high_pct ) & (spy_signals_df['SPY-to-SMA200'] + 1> self.spy_consecutive_buy_threshold) & (spy_signals_df['SPY-to-SMA200_prev'] + 1>  self.spy_consecutive_buy_threshold)
+        spy_signals_df['spy-ready-to-buy'] = spy_signals_df['max_off_new_high']< self.spy_max_off_new_high_pct
+        spy_buy_rule = spy_signals_df['spy-ready-to-buy'] & (spy_signals_df['SPY-to-SMA200'] + 1> self.spy_consecutive_buy_threshold) & (spy_signals_df['SPY-to-SMA200_prev'].shift(1) + 1 <  self.spy_consecutive_buy_threshold)
         #fill in the first 10 days with 0
-        buy_rule.iloc[0:self.spy_consecutive_days] = False
-        spy_signals_df['Signal'] = np.where(buy_rule, 1, 0)
+        spy_buy_rule.iloc[0:self.spy_consecutive_days] = False
+        spy_signals_df['SPY_Signal'] = np.where(spy_buy_rule, 1, 0)
 
-        signals_df = ffty_signals_df.rename(columns={'Signal':'FFTY_Signal'}).merge(spy_signals_df.rename(columns={'Signal':'SPY_Signal'}), how='left', left_index=True, right_index=True).sort_index()
-        signals_df['FFTY_Signal'] = signals_df['FFTY_Signal'].fillna(0)
-        signals_df['Signal']= np.where((signals_df['SPY_Signal']==1)|(signals_df['FFTY_Signal']==1), 1, np.where(signals_df['FFTY_Signal'] < 0, -1, 0))
+        signals_df = ffty_signals_df[['FFTY_Signal','FFTY_to_SMA200']].merge(spy_signals_df[['SPY_Signal', 'spy-ready-to-buy']], how='left', left_index=True, right_index=True).sort_index()
+        signals_df['Signal']= np.where((signals_df['SPY_Signal']>0)|(signals_df['FFTY_Signal']>0), 1, np.where(signals_df['FFTY_Signal'] < 0, -1, 0))
 
-        self.joined_data = ffty_signals_df.rename(columns={'Signal':'FFTY_Signal'}).merge(spy_signals_df.rename(columns={'Signal':'SPY_Signal'}), how='left', left_index=True, right_index=True).sort_index()
+        self.joined_data = ffty_signals_df.merge(spy_signals_df, how='left', left_index=True, right_index=True).sort_index()
+        self.joined_data.merge(signals_df, how='left', left_index=True, right_index=True).sort_index()
+
         self.trades = signals_df[['Signal']]
 
 class fftynaa200r_stg(Strategy):
@@ -690,7 +694,7 @@ class BackTest(Portfolio):
         self.balance.loc[i[0], 'Total'] = total
 
     def __collect_tax(self, i, tax_collect_year, c_price, long_term_tax_rate , short_term_tax_rate, verbose = False):
-        # check whether if the tax this year (transaction last year) are collected:   
+        # check whether if the tax this year (transaction last year) are collected:
         if self.trade_records.loc[self.trade_records['TaxCollectYear'] == tax_collect_year, 'TaxCollected'].max() == 0:
             # calculate tax to be collected
             tax_to_collect = (self.trade_records.loc[self.trade_records['TaxCollectYear'] == tax_collect_year, 'LongTermProfit'] * long_term_tax_rate + \
@@ -797,7 +801,7 @@ class BackTest(Portfolio):
             self.balance.loc[self.balance.index[-1], 'Cash'] = 0
             self.__record_sell(stock_data.ticker, self.balance.index[-1], self.balance.iloc[-1][stock_data.ticker], self.balance.iloc[-1]['Stock'])
 
-        # if there are any trade this year, need to settle tax 
+        # if there are any trade this year, need to settle tax
         for i in self.balance.iloc[[-1]].iterrows():
             self.__collect_tax(i, i[0].year + 1, c_price, long_term_tax_rate , short_term_tax_rate, verbose )
 
