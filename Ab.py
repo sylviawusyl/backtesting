@@ -1,5 +1,6 @@
 #install yfinance
 #pip install yfinance --upgrade --no-cache-dir
+
 import yfinance as yf
 import datetime as dt
 import pytz
@@ -153,6 +154,11 @@ class StockData(object):
         #Full %K = Fast %D
         #Full %D = 5-period EMA of Full %K
         self.get_ema('%K', fd_window, '%D')
+    def get_close_range(self, high='High', low='Low', close='Close', range='Range'):
+        self.data[range] = (self.data[close] - self.data[low])/(self.data[high] - self.data[low])
+
+    def get_to_percentage(self, input='Close', target='SMA', output='Output'):
+        self.data[output] = (self.data[input]-self.data[target])/self.data[target]
 
 class Strategy(metaclass=ABCMeta):
     def __init__(self, name: str, stop_loss: float, take_profit: float):
