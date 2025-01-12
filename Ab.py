@@ -308,9 +308,25 @@ class Threshold(Strategy):
             self.joined_data[ma_str] > self.joined_data['Close']), -1.0, self.joined_data['Signal'])
         
         #stop loss rule: drop stop loss% or more in a day
-        if self.stop_loss>0:
-            self.joined_data['Signal'] = np.where((self.joined_data['Close'] < self.joined_data['Close'].shift(1) * (1-self.stop_loss)), -2.0, self.joined_data['Signal'])
+        if self.stop_loss<0:
+            #self.joined_data['Signal'] = np.where((self.joined_data['Close'] < self.joined_data['Close'].shift(1) * (1+self.stop_loss)), -2.0, self.joined_data['Signal'])
+            # keep track of last buy
 
+            # Step 1: Mark the last buy price
+            self.joined_data['last_buy_price'] = self.joined_data['Close'].where(self.joined_data['Signal'] == 1)
+
+            # Step 2: Forward fill to propagate the last buy price
+            self.joined_data['last_buy_price'] = self.joined_data['last_buy_price'].ffill()
+
+            # Step 3: Reset after a sell
+            self.joined_data[self.joined_data['Signal'] == -1, 'last_buy_price'] = None
+
+            # sell if stop loss triggered (profit = close/last_buy - 1 < stop loss)
+            self.joined_data['profit_since_last_buy'] = self.joined_data['Close'] / self.joined_data['last_buy_price'] - 1
+            self.joined_data['Signal'] = np.where((self.joined_data['profit_since_last_buy'] <= (1+self.stop_loss)), -2.0, self.joined_data['Signal'])
+            self.joined_data['Stop_loss'] = self.stop_loss
+            
+            
         #rename the 'Close' to indicator.ticker
         self.joined_data.rename(columns={'Close': indicator.ticker}, inplace=True)
 
@@ -418,7 +434,7 @@ class StochasticCross(Strategy):
 
         #stop loss rule: TQQQ drop 10% or more in a day
         self.joined_data['SSignal'] = np.where((self.joined_data['DClose'] < self.joined_data['DClose'].shift(1) * 0.9), -2.0, self.joined_data['SSignal'])
-
+        self.joined_data['Stop_loss'] = -0.1#self.stop_loss
 
         #only keep sd to ed data
         self.joined_data = self.joined_data.loc[sd:ed]
@@ -783,7 +799,8 @@ class BackTest(Portfolio):
             elif(i[1]['Signal'] < 0 and self.pyramiding_count > 0) or (i[1]['SSignal'] < 0 and self.pyramiding_count > 0 and p_stock !=0):
                 if i[1]['Signal'] == -2 or i[1]['SSignal'] == -2:
                     #stop loss sell, cap the loss at yesterdays price -10%
-                    sell_price = p_price * 0.9
+                    sell_price = c_price
+                    #sell_price = p_price * 0.9
                 else:
                     sell_price = c_price
                 self.balance.loc[i[0], 'Stock'] = 0
