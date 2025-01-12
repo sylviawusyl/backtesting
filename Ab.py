@@ -49,6 +49,7 @@ class StockData(object):
         if interval == '1wk':
             self.data.index = self.data.index + dt.timedelta(days=4)
         self.data['Weekday'] = self.data.index.weekday
+        self.data = self.data.droplevel(axis=1, level=1)
         self.index = pd.to_datetime(self.data.index)
 
 
@@ -102,13 +103,15 @@ class StockData(object):
         if interval == '1wk':
             self.data.index = self.data.index - dt.timedelta(days=2)
         self.data['Weekday'] = self.data.index.weekday
+        self.data = self.data.droplevel(axis=1, level=1)
         self.data.index = pd.to_datetime(self.data.index)
 
 
-    def get_data_from_csv(self, path: str):
+    def get_data_from_csv(self, path: str, start_date=dt.datetime(1900,1,1), end_date=dt.datetime(2900,1,1)):
         self.data = pd.read_csv(path)
         self.data['Date'] = pd.to_datetime(self.data['Date'])
         self.data.set_index(['Date'], inplace=True)
+        self.data = self.data.loc[(self.data.index>=start_date)&(self.data.index<=end_date)]
         self.data.sort_index(inplace=True)
 
     def get_data_from_db(self, db_path: str = 'data/stock_data.db', limit: int = 100000):
@@ -303,6 +306,11 @@ class Threshold(Strategy):
             self.joined_data[ma_str] < self.joined_data['Close']), 1.0, 0.0)
         self.joined_data['Signal'] = np.where((self.joined_data['Close'] < self.sell_threshold) & (
             self.joined_data[ma_str] > self.joined_data['Close']), -1.0, self.joined_data['Signal'])
+        
+        #stop loss rule: drop stop loss% or more in a day
+        if self.stop_loss>0:
+            self.joined_data['Signal'] = np.where((self.joined_data['Close'] < self.joined_data['Close'].shift(1) * (1-self.stop_loss)), -2.0, self.joined_data['Signal'])
+
         #rename the 'Close' to indicator.ticker
         self.joined_data.rename(columns={'Close': indicator.ticker}, inplace=True)
 
